@@ -7,8 +7,11 @@ vars:
   BUILD_ROOT: dist
   BUILD_DIR: "{{.BUILD_ROOT}}/{{.SKILL_NAME}}"
   CODEX_SKILLS_DIR: "{{.HOME_DIR}}/.codex/skills"
+  CODEX_PROMPTS_DIR: "{{.HOME_DIR}}/.codex/prompts"
   CLAUDE_SKILLS_DIR: "{{.HOME_DIR}}/.claude/skills"
+  CLAUDE_COMMANDS_DIR: "{{.HOME_DIR}}/.claude/commands"
   FORGE_SKILLS_DIR: "{{.HOME_DIR}}/.forge/skills"
+  AGENTS_COMMANDS_DIR: "{{.HOME_DIR}}/.agents/commands"
 
 tasks:
   build:
@@ -17,8 +20,10 @@ tasks:
     cmds:
       - rm -rf "{{.BUILD_DIR}}"
       - mkdir -p "{{.BUILD_DIR}}/scripts"
+      - mkdir -p "{{.BUILD_DIR}}/commands"
       - cp SKILL.md config.json "{{.BUILD_DIR}}/"
       - cp scripts/obsidian_wiki.py "{{.BUILD_DIR}}/scripts/"
+      - cp commands/document.md commands/forge-document.md "{{.BUILD_DIR}}/commands/"
 
   install:
     desc: Install the skill for Codex, Claude Code, and ForgeCode
@@ -29,28 +34,34 @@ tasks:
       - task: install:forge
 
   install:codex:
-    desc: Install the skill into the local Codex skills directory
+    desc: Install the skill and document command for Codex
     deps: [build]
     cmds:
       - mkdir -p "{{.CODEX_SKILLS_DIR}}"
+      - mkdir -p "{{.CODEX_PROMPTS_DIR}}"
       - rm -rf "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}"
       - cp -R "{{.BUILD_DIR}}" "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}"
+      - cp commands/document.md "{{.CODEX_PROMPTS_DIR}}/document.md"
 
   install:claude:
-    desc: Install the skill into the local Claude Code skills directory
+    desc: Install the skill and document command for Claude Code
     deps: [build]
     cmds:
       - mkdir -p "{{.CLAUDE_SKILLS_DIR}}"
+      - mkdir -p "{{.CLAUDE_COMMANDS_DIR}}"
       - rm -rf "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}"
       - cp -R "{{.BUILD_DIR}}" "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}"
+      - cp commands/document.md "{{.CLAUDE_COMMANDS_DIR}}/document.md"
 
   install:forge:
-    desc: Install the skill into the local ForgeCode skills directory
+    desc: Install the skill and document command for ForgeCode
     deps: [build]
     cmds:
       - mkdir -p "{{.FORGE_SKILLS_DIR}}"
+      - mkdir -p "{{.AGENTS_COMMANDS_DIR}}"
       - rm -rf "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}"
       - cp -R "{{.BUILD_DIR}}" "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}"
+      - cp commands/forge-document.md "{{.AGENTS_COMMANDS_DIR}}/document.md"
 
   verify:
     desc: Verify the built skill package and script entrypoint
@@ -59,6 +70,8 @@ tasks:
       - test -f "{{.BUILD_DIR}}/SKILL.md"
       - test -f "{{.BUILD_DIR}}/config.json"
       - test -f "{{.BUILD_DIR}}/scripts/obsidian_wiki.py"
+      - test -f "{{.BUILD_DIR}}/commands/document.md"
+      - test -f "{{.BUILD_DIR}}/commands/forge-document.md"
       - python "{{.BUILD_DIR}}/scripts/obsidian_wiki.py" --help
 
   verify:codex:
@@ -67,6 +80,7 @@ tasks:
       - test -f "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}/SKILL.md"
       - test -f "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}/config.json"
       - test -f "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py"
+      - test -f "{{.CODEX_PROMPTS_DIR}}/document.md"
       - python "{{.CODEX_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py" --help
 
   verify:claude:
@@ -75,6 +89,7 @@ tasks:
       - test -f "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}/SKILL.md"
       - test -f "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}/config.json"
       - test -f "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py"
+      - test -f "{{.CLAUDE_COMMANDS_DIR}}/document.md"
       - python "{{.CLAUDE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py" --help
 
   verify:forge:
@@ -83,4 +98,5 @@ tasks:
       - test -f "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}/SKILL.md"
       - test -f "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}/config.json"
       - test -f "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py"
+      - test -f "{{.AGENTS_COMMANDS_DIR}}/document.md"
       - python "{{.FORGE_SKILLS_DIR}}/{{.SKILL_NAME}}/scripts/obsidian_wiki.py" --help

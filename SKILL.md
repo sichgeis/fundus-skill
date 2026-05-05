@@ -44,6 +44,25 @@ Defaults installed with this skill:
 4. Decide whether to update or create.
 5. Write the final note content.
 
+## Codex Permission Behavior
+
+When running under Codex, minimize approval prompts:
+
+- Use the installed script path: `/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py`.
+- Prefer `--content` for create and update operations so Codex can run one approved Python command without creating a temporary content file first.
+- Use `--content-file` only when inline shell quoting or command length makes `--content` impractical.
+- If Codex asks for command approval, allow the prefix `python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py` for future runs.
+
+## Slash command workflow
+
+The optional `document` slash command is a convenience wrapper around this skill. When invoked, treat the command arguments as the wiki topic to document for the current repository.
+
+- Use the argument text as the note topic, for example `all unit tests of the project`.
+- Inspect the project enough to document the topic accurately before writing.
+- For unit-test documentation, identify test directories, frameworks, major test groups, fixtures, helpers, and relevant test commands. Summarize behavior by area instead of listing every assertion unless the project is small.
+- Use the standard scan/read/create/update workflow above. Do not create a duplicate note when an existing page already covers the topic.
+- In the final response, include the vault-relative wiki note path that was created or updated.
+
 ## Commands
 
 Run the installed script from the project you want to document. Replace `/path/to/obsidian-wiki` with this skill directory when needed:
@@ -59,7 +78,9 @@ python /path/to/obsidian-wiki/scripts/obsidian_wiki.py read --path "Wiki/my-proj
 ```bash
 python /path/to/obsidian-wiki/scripts/obsidian_wiki.py create \
   --title "Authentication Flow" \
-  --content-file /absolute/path/to/content.md \
+  --content "## Overview
+
+Document the relevant behavior here." \
   --tag auth
 ```
 
@@ -67,7 +88,9 @@ python /path/to/obsidian-wiki/scripts/obsidian_wiki.py create \
 python /path/to/obsidian-wiki/scripts/obsidian_wiki.py update \
   --path "Wiki/my-project/authentication-flow.md" \
   --mode append \
-  --content-file /absolute/path/to/content.md
+  --content "## New Findings
+
+Document the update here."
 ```
 
 ```bash
@@ -75,7 +98,7 @@ python /path/to/obsidian-wiki/scripts/obsidian_wiki.py update \
   --path "Wiki/my-project/authentication-flow.md" \
   --mode replace \
   --section "Session Handling" \
-  --content-file /absolute/path/to/content.md
+  --content "Session handling details go here."
 ```
 
 ## Notes

@@ -7,6 +7,7 @@ The skill persists codebase knowledge into an Obsidian vault as per-repository w
 ## Layout
 
 - `SKILL.md`: agent-agnostic skill manifest and operating instructions.
+- `commands/`: slash-command wrappers that invoke the skill from supported agents.
 - `scripts/obsidian_wiki.py`: deterministic scan/read/create/update tool for wiki documents.
 - `config.json`: local default configuration used by the installed skill.
 - `config.example.json`: portable configuration template.
@@ -53,7 +54,27 @@ The install targets copy the same built package into:
 ~/.forge/skills/obsidian-wiki
 ```
 
+They also install the `document` command into each agent's command location:
+
+```text
+~/.codex/prompts/document.md
+~/.claude/commands/document.md
+~/.agents/commands/document.md
+```
+
+Use it as `/document ...` in Codex and Claude Code. In ForgeCode, use the native command form `:document ...`.
+
 Restart the target agent after installing or changing the skill so the skill manifest is reloaded.
+
+## Codex Permissions
+
+For fast documentation runs in Codex, approve this command prefix when prompted:
+
+```text
+python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
+```
+
+The skill instructions prefer inline `--content` for create and update operations, which avoids a separate temporary-file creation step. Use `--content-file` only for notes that are too large or awkward to quote inline.
 
 ## Verify
 
@@ -61,6 +82,14 @@ Run:
 
 ```bash
 task verify
+```
+
+After installing, verify agent-specific installs with:
+
+```bash
+task verify:codex
+task verify:claude
+task verify:forge
 ```
 
 You can also run the built or installed script directly:

@@ -18,6 +18,7 @@ Use this skill when a user wants persistent repository knowledge written into th
 - If a likely match exists, read it before deciding whether to update or create.
 - Update existing notes automatically when they already cover the topic. Create a new note only when no good match exists.
 - Preserve concise, useful Markdown. The body is free-form, so choose headings and structure that fit the topic.
+- Created notes get a generated `# Title` heading. If create content already starts with the same H1, the tool removes that duplicate heading automatically.
 - Expect secret redaction to run automatically before content is written.
 
 ## Configuration
@@ -118,6 +119,7 @@ Replace the full article body here."
 - The script detects the active project from the current working directory and its git root, unless `--project` is provided.
 - `read` returns the full Markdown document.
 - `create` fails if the slug already exists.
+- `create` preserves one generated title H1 and removes a duplicate matching leading H1 from supplied content.
 - `update --mode replace` replaces the named heading section or creates it if missing.
 - `update --mode rewrite` replaces the full article body while preserving frontmatter.
 - All resolved paths are constrained to the configured vault root.

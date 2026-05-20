@@ -334,8 +334,23 @@ def scan_documents(config: Config, project_name: str, query: str | None) -> list
     return documents
 
 
+def remove_duplicate_title_heading(body: str, title: str) -> str:
+    lines = body.strip().splitlines()
+    if not lines:
+        return ""
+
+    match = re.match(r"^#\s+(.+?)\s*$", lines[0])
+    if not match or match.group(1).strip().casefold() != title.strip().casefold():
+        return body.strip()
+
+    remaining_lines = lines[1:]
+    while remaining_lines and not remaining_lines[0].strip():
+        remaining_lines = remaining_lines[1:]
+    return "\n".join(remaining_lines).strip()
+
+
 def render_document(frontmatter: dict[str, Any], body: str) -> str:
-    cleaned_body = body.strip()
+    cleaned_body = remove_duplicate_title_heading(body, str(frontmatter["title"]))
     return f"{format_frontmatter(frontmatter)}\n\n# {frontmatter['title']}\n\n{cleaned_body}\n"
 
 

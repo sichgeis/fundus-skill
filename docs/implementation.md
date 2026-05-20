@@ -16,6 +16,7 @@ The script supports:
 - `update`: append content, replace a named heading section, or rewrite the full article body.
 
 All writes go through `scripts/obsidian_wiki.py`; agents should not edit wiki documents directly.
+Create removes a duplicate leading H1 from supplied content when it matches the generated document title, so notes keep a single top-level title heading.
 Use `update --mode rewrite` when a note is outdated enough that append or section replacement would preserve misleading stale content.
 
 ## Agent Package

@@ -38,6 +38,40 @@ class WikiTestCase(unittest.TestCase):
         return body.strip()
 
 
+class CreateDocumentTest(WikiTestCase):
+    def create_article(self, title: str, body: str) -> Path:
+        result = obsidian_wiki.create_document(self.config, "demo", title, body, None)
+        return self.vault_path / result["path"]
+
+    def test_create_removes_duplicate_leading_title_heading(self) -> None:
+        path = self.create_article("Authentication Flow", "# Authentication Flow\n\n## Overview\n\nDetails")
+
+        self.assertEqual(
+            self.read_document_body(path),
+            "# Authentication Flow\n\n## Overview\n\nDetails",
+        )
+
+    def test_create_removes_duplicate_title_heading_case_insensitively(self) -> None:
+        path = self.create_article("Authentication Flow", "# authentication flow\n\nDetails")
+
+        self.assertEqual(self.read_document_body(path), "# Authentication Flow\n\nDetails")
+
+    def test_create_preserves_non_matching_leading_h1(self) -> None:
+        path = self.create_article("Authentication Flow", "# Session Flow\n\nDetails")
+
+        self.assertEqual(self.read_document_body(path), "# Authentication Flow\n\n# Session Flow\n\nDetails")
+
+    def test_create_preserves_lower_level_heading_content(self) -> None:
+        path = self.create_article("Authentication Flow", "## Overview\n\nDetails")
+
+        self.assertEqual(self.read_document_body(path), "# Authentication Flow\n\n## Overview\n\nDetails")
+
+    def test_create_preserves_plain_body_content(self) -> None:
+        path = self.create_article("Authentication Flow", "Details")
+
+        self.assertEqual(self.read_document_body(path), "# Authentication Flow\n\nDetails")
+
+
 class UpdateDocumentTest(WikiTestCase):
     def write_article(self, body: str, frontmatter: str | None = None) -> None:
         metadata = frontmatter or "\n".join(

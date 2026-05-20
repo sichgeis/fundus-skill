@@ -5,6 +5,7 @@ This repository is the source of truth for the local `obsidian-wiki` Agent Skill
 The skill persists codebase knowledge into an Obsidian vault as per-repository wiki documents. The same skill package can be installed for Codex, Claude Code, and ForgeCode.
 
 Existing wiki documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
+Created documents keep one generated top-level title heading; duplicate matching H1 headings in supplied content are removed automatically.
 
 ## Layout
 

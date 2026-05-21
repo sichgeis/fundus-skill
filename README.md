@@ -89,7 +89,15 @@ prefix_rule(
     justification = "Allow the vetted Obsidian wiki skill helper without repeated prompts",
     match = [
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py scan",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py read",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py create",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py index rebuild",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py index status",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive candidates",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive apply",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive restore",
+        "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py archive status",
         "python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py doctor",
     ],
     not_match = [
@@ -151,7 +159,7 @@ python dist/obsidian-wiki/scripts/obsidian_wiki.py archive restore \
   --path "Wiki/_archive/my-project/old-ticket.md"
 ```
 
-Archived notes move to `Wiki/_archive/{project}/`, keep their content, and get archive metadata in frontmatter. Normal `scan` excludes archived notes; use `scan --include-archived` to find them explicitly.
+Archived notes move to `Wiki/_archive/{project}/`, keep their content, and get archive metadata in frontmatter. Empty active project folders are removed after archive, and restore recreates the original folder while cleaning up empty archive project folders. Normal `scan` excludes archived notes; use `scan --include-archived` to find them explicitly.
 
 ## Verify
 

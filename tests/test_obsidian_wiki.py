@@ -281,6 +281,24 @@ class ArchiveDocumentTest(WikiTestCase):
         self.assertEqual(frontmatter["original_path"], "Wiki/demo/old-ticket.md")
         self.assertIn("Body", body)
 
+    def test_archive_apply_removes_empty_active_project_directory(self) -> None:
+        path = self.create_article("Old Ticket", "Body", ["ticket"])
+
+        result = obsidian_wiki.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
+
+        self.assertTrue(result["active_directory_removed"])
+        self.assertFalse((self.vault_path / "Wiki" / "demo").exists())
+
+    def test_archive_apply_keeps_active_project_directory_when_not_empty(self) -> None:
+        path = self.create_article("Old Ticket", "Body", ["ticket"])
+        self.create_article("Remaining Note", "Body", ["ticket"])
+
+        result = obsidian_wiki.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
+
+        self.assertFalse(result["active_directory_removed"])
+        self.assertTrue((self.vault_path / "Wiki" / "demo").exists())
+        self.assertTrue((self.vault_path / "Wiki" / "demo" / "remaining-note.md").exists())
+
     def test_scan_excludes_archived_notes_by_default(self) -> None:
         path = self.create_article("Old Ticket", "Searchable archived body", ["ticket"])
         obsidian_wiki.rebuild_index(self.config)
@@ -306,9 +324,26 @@ class ArchiveDocumentTest(WikiTestCase):
         self.assertTrue(restored_path.exists())
         self.assertFalse(archive_path.exists())
         self.assertEqual(restore_result["path"], "Wiki/demo/old-ticket.md")
+        self.assertTrue(restore_result["archive_directory_removed"])
+        self.assertTrue((self.vault_path / "Wiki" / "demo").exists())
+        self.assertFalse((self.vault_path / "Wiki" / "_archive" / "demo").exists())
+        self.assertTrue((self.vault_path / "Wiki" / "_archive").exists())
         frontmatter, _ = obsidian_wiki.parse_frontmatter(restored_path.read_text())
         self.assertNotIn("archived", frontmatter)
         self.assertNotIn("original_path", frontmatter)
+
+    def test_restore_keeps_archive_project_directory_when_not_empty(self) -> None:
+        first_path = self.create_article("First Ticket", "Body", ["ticket"])
+        second_path = self.create_article("Second Ticket", "Body", ["ticket"])
+        first_archive = obsidian_wiki.archive_document(self.config, str(first_path.relative_to(self.vault_path)), "old")
+        obsidian_wiki.archive_document(self.config, str(second_path.relative_to(self.vault_path)), "old")
+
+        result = obsidian_wiki.restore_document(self.config, first_archive["path"])
+
+        self.assertFalse(result["archive_directory_removed"])
+        self.assertTrue((self.vault_path / "Wiki" / "demo").exists())
+        self.assertTrue((self.vault_path / "Wiki" / "_archive" / "demo").exists())
+        self.assertTrue((self.vault_path / "Wiki" / "_archive" / "demo" / "second-ticket.md").exists())
 
     def test_restore_fails_when_destination_exists(self) -> None:
         path = self.create_article("Old Ticket", "Body", ["ticket"])

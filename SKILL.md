@@ -60,7 +60,7 @@ Use archive when old notes are superseded but still worth preserving.
 5. Archive only explicit selected paths with `archive apply --path "Wiki/project/note.md" --reason "..."`.
 6. Restore with `archive restore --path "Wiki/_archive/project/note.md"` when needed.
 
-Archived notes move to `Wiki/_archive/{project}/`, keep their content, and are excluded from normal scan results. Use `scan --include-archived` for explicit archived lookup.
+Archived notes move to `Wiki/_archive/{project}/`, keep their content, and are excluded from normal scan results. Empty active project folders are removed after archive, and restore recreates the original folder while cleaning up empty archive project folders. Use `scan --include-archived` for explicit archived lookup.
 
 ## Codex Permission Behavior
 
@@ -179,8 +179,8 @@ python /path/to/obsidian-wiki/scripts/obsidian_wiki.py doctor
 - `scan` uses `{vault_path}/{wiki_dir}/.obsidian-wiki-index.json` when present and falls back to direct project Markdown scanning when absent. It excludes archived notes unless `--include-archived` is passed.
 - `index rebuild` refreshes the lightweight search index from all project wiki Markdown documents.
 - `archive candidates` is read-only and suggests old notes by `updated` timestamp and tags. It scans the active project by default; pass `--global` to scan all active project wiki folders. Durable notes are excluded unless `--force` is passed.
-- `archive apply` moves an active note to `Wiki/_archive/{project}/` and writes archive frontmatter.
-- `archive restore` moves an archived note back to its recorded `original_path`.
+- `archive apply` moves an active note to `Wiki/_archive/{project}/`, writes archive frontmatter, and removes the active project folder when it becomes empty.
+- `archive restore` moves an archived note back to its recorded `original_path`, recreating the original folder as needed and removing the archive project folder when it becomes empty.
 - `index status` and `doctor` help diagnose missing or stale indexes and resolved configuration.
 - The script detects the active project from the current working directory and its git root, unless `--project` is provided.
 - `read` returns the full Markdown document.

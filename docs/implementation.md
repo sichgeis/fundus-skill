@@ -46,7 +46,7 @@ Archived notes are stored under:
 {vault_path}/{wiki_dir}/_archive/{project-name}/
 ```
 
-`archive apply` moves the file, preserves its body, and adds frontmatter fields: `archived`, `archived_at`, `archived_reason`, and `original_path`. `archive restore` uses `original_path` and fails if the destination already exists.
+`archive apply` moves the file, preserves its body, and adds frontmatter fields: `archived`, `archived_at`, `archived_reason`, and `original_path`. If the active project directory becomes empty after the move, it is removed. `archive restore` uses `original_path`, recreates the original project directory as needed, fails if the destination already exists, and removes the archive project directory when it becomes empty.
 
 Normal `scan` excludes archived notes. `scan --include-archived` returns archived entries with archive metadata. The index includes active and archived notes so archive and restore keep search state fresh without requiring a full rebuild.
 

@@ -111,7 +111,19 @@ prefix_rule(
 
 This trusts invocations of that helper script through the matching prefix; it is not a fine-grained audit of every file write or subprocess inside Python. Keep the helper small, deterministic, and path-constrained.
 
-The skill instructions prefer inline `--content` for create and update operations, which avoids a separate temporary-file creation step. Use `--content-file` only for notes that are too large or awkward to quote inline.
+This rule covers the installed wiki helper only. It does not cover repository maintenance commands such as `task install`, `task install:codex`, or direct edits under `~/.codex`; those are separate filesystem writes outside the active workspace and may still require their own approval or durable rule. Do not run install tasks during normal wiki documentation. Install only after changing the skill source and when the installed agent copy actually needs to be refreshed.
+
+For Codex, keep the helper invocation itself simple so the prefix rule can match it. Use inline `--content` only for short, simple, single-line content. For multiline or quote-heavy Markdown, write the body to a temporary file in a sandbox-writable location such as `/private/tmp`, then call the helper with `--content-file`:
+
+```bash
+python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update \
+  --path "Wiki/my-project/authentication-flow.md" \
+  --mode replace \
+  --section "Session Handling" \
+  --content-file /private/tmp/wiki-update.md
+```
+
+Avoid wrapping wiki writes in shell-heavy commands such as here-docs, `$'...'` strings, command substitutions, redirections, or long `/bin/zsh -lc ...` payloads. Those forms can fall outside Codex's conservative command-prefix matching even though the underlying Python script is allowlisted.
 
 ## Search Index
 

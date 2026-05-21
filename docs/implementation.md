@@ -99,7 +99,9 @@ prefix_rule(
 
 This allowlist trusts commands that start with the matching script prefix. It does not inspect every file write, network call, or subprocess inside the Python process, so the helper should remain small, deterministic, and constrained to the configured vault.
 
-`SKILL.md` tells Codex to prefer inline `--content` for create and update operations. That keeps the workflow to a single Python command and avoids an extra approval for creating a temporary Markdown file. `--content-file` remains available for very large notes or content that is impractical to pass as one shell argument.
+`SKILL.md` tells Codex to keep the allowlisted helper invocation simple. Inline `--content` is appropriate for short, simple, single-line content. Multiline or quote-heavy Markdown should be passed with `--content-file` from a sandbox-writable temporary path such as `/private/tmp`. This avoids shell-heavy command shapes, including here-docs, `$'...'` strings, command substitutions, redirections, and long `/bin/zsh -lc ...` payloads. Those forms can fail Codex's conservative command-prefix matching even when the underlying Python helper prefix is allowlisted.
+
+The helper allowlist is separate from repository maintenance. Installing the source package with `task install`, `task install:codex`, `task install:claude`, or `task install:forge` writes outside the active workspace into agent configuration directories. Those commands need their own approval/rules and should only be run when the installed skill copy must be refreshed, not during routine wiki note writes.
 
 ## Configuration
 

@@ -68,11 +68,13 @@ Archived notes move to `Wiki/_archive/{project}/`, keep their content, and are e
 When running under Codex, minimize approval prompts:
 
 - Use the installed script path: `/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py`.
-- Prefer `--content` for create and update operations so Codex can run one approved Python command without creating a temporary content file first.
-- Use `--content-file` only when inline shell quoting or command length makes `--content` impractical.
+- Use `--content` only for short, simple, single-line content that does not need shell interpolation, command substitution, here-docs, or ANSI-C `$'...'` quoting.
+- Use `--content-file` for multiline, quote-heavy, or generated Markdown. Put the temporary file under a sandbox-writable location such as `/private/tmp`, then run a clean helper command like `python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update --path ... --mode ... --content-file /private/tmp/note.md`.
 - If Codex asks for command approval, allow the prefix `python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py` for future runs.
 - Codex approvals are command-prefix based, not skill-name based. There is no separate skill-level whitelist in this repository; durable allowlisting belongs in Codex Rules, for example `~/.codex/rules/default.rules`.
 - A suitable Codex Rule is `prefix_rule(pattern = ["python", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"], decision = "allow", ...)`. Restart Codex after adding or changing rules.
+- Commands wrapped in shell features such as here-docs, `$'...'` strings, command substitutions, redirections, or long `/bin/zsh -lc ...` payloads may not match the durable prefix rule even when the underlying Python script is allowlisted.
+- This helper rule does not cover maintenance commands such as `task install:codex` or direct writes to `~/.codex`; those require separate approval/rules and should not be part of normal wiki note creation or updates.
 - Treat such a rule as trust in this script invocation, not as fine-grained inspection of every internal Python file write or subprocess.
 
 ## Slash command workflow

@@ -13,6 +13,7 @@ vars:
   BUILD_DIR: "{{.BUILD_ROOT}}/{{.SKILL_NAME}}"
   PLUGIN_BUILD_DIR: "{{.BUILD_ROOT}}/{{.SKILL_NAME}}-plugin"
   PLUGIN_MARKETPLACE_DIR: "{{.BUILD_ROOT}}/{{.SKILL_NAME}}-marketplace"
+  PLUGIN_CACHEBUSTER: "{{.HOME_DIR}}/.codex/skills/.system/plugin-creator/scripts/update_plugin_cachebuster.py"
   PLUGIN_VALIDATOR: "{{.HOME_DIR}}/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py"
   CODEX_SKILLS_DIR: "{{.HOME_DIR}}/.codex/skills"
   CODEX_PROMPTS_DIR: "{{.HOME_DIR}}/.codex/prompts"
@@ -80,12 +81,24 @@ tasks:
       - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" scripts/audit_token_budget.py
 
   install:
-    desc: Install the skill for Codex
+    desc: Install the Fundus Codex plugin from the local marketplace
     cmds:
-      - task: install:codex
+      - task: install:plugin
+
+  install:plugin:
+    desc: Refresh, cache-bust, and install the local Fundus Codex plugin
+    deps: [plugin:refresh]
+    cmds:
+      - |
+        if test -f "{{.PLUGIN_CACHEBUSTER}}"; then
+          PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" "{{.PLUGIN_CACHEBUSTER}}" "{{.PLUGIN_MARKETPLACE_DIR}}/plugins/{{.SKILL_NAME}}"
+        else
+          echo "Skipping plugin cachebuster: {{.PLUGIN_CACHEBUSTER}} not found"
+        fi
+      - codex plugin add "{{.SKILL_NAME}}@{{.SKILL_NAME}}-local"
 
   install:codex:
-    desc: Install the skill for Codex
+    desc: Legacy direct skill install for Codex; do not use alongside the plugin
     deps: [build]
     cmds:
       - mkdir -p "{{.CODEX_SKILLS_DIR}}"

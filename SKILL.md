@@ -57,10 +57,11 @@ Do not use Fundus when the user opts out, when the content is casual/non-work kn
 
 ## Codex Permission Behavior
 
+- Prefer the plugin-provided `fundus` MCP tools for normal Fundus reads and writes.
 - Read-only helper calls such as `scan`, `read`, `doctor`, `index status`, `archive candidates`, and migration `--dry-run` should not request write escalation.
 - Write-like calls such as `create`, `update`, `index rebuild`, `archive apply`, `archive restore`, `archive cleanup`, and migration `--apply` need escalated sandbox permissions when the vault is outside the writable workspace.
-- Use the exact installed helper command with stable interpreter: `python /Users/christian/.codex/skills/fundus/scripts/fundus.py`.
-- If the helper prefix is already allowlisted, do not pass a new `prefix_rule`; keep required escalation justifications terse.
+- If MCP tools are unavailable and you must use the CLI helper, run `scripts/fundus.py` from the loaded skill package or from the repository build. Do not assume the legacy direct-skill path `~/.codex/skills/fundus`; plugin installs live under the versioned Codex plugin cache.
+- If the exact helper prefix is already allowlisted, do not pass a new `prefix_rule`; keep required escalation justifications terse.
 - For multiline Markdown, write a temporary file under `/private/tmp` and pass `--content-file`. Avoid shell wrappers, heredocs, redirection, command substitution, and inline multiline shell quoting.
 
 ## References

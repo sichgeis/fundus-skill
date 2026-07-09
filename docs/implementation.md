@@ -103,17 +103,18 @@ Active `index.md` and `log.md` files are OKF reserved files. During the canonica
 
 Archived notes are preserved but quiet. They should live under `Fundus/_archive/`, remain excluded from normal scans, and be included only when archive lookup is explicit. Archive metadata should be preserved where present, but archived legacy notes do not need expensive normalization for the first plugin release.
 
-## Codex Skill Package
+## Codex Plugin Package
 
-The repository builds one direct Codex skill package at `dist/fundus`. Runtime installation copies that package to:
+The repository builds the Fundus skill runtime at `dist/fundus`. The plugin package wraps that runtime with plugin metadata, a local MCP server registration, and a local marketplace entry:
 
 ```text
-~/.codex/skills/fundus
+dist/fundus-plugin
+dist/fundus-marketplace
 ```
 
-`SKILL.md` contains the workflow instructions, while `agents/openai.yaml` provides Codex app metadata and the invocation policy. Codex should resolve helper scripts relative to the loaded skill directory.
+`SKILL.md` contains the workflow instructions, while `agents/openai.yaml` provides Codex app metadata and the invocation policy. The plugin install is the primary distribution path; the legacy direct-skill install exists only as a recovery or compatibility escape hatch.
 
-The plugin target is a thin distribution wrapper around the same workflow: compact Fundus skill, local stdio MCP server, plugin metadata, and local marketplace entry. `task build:plugin` generates `dist/fundus-plugin`; `task plugin:refresh` generates `dist/fundus-marketplace` with a local marketplace entry for testing. The plugin does not replace the deterministic helper or bypass Codex permissions.
+`task build:plugin` generates `dist/fundus-plugin`; `task plugin:refresh` generates `dist/fundus-marketplace`; `task install` refreshes, cache-busts, and reinstalls `fundus@fundus-local`. The plugin does not replace the deterministic helper or bypass Codex permissions.
 
 ## MCP Server
 
@@ -121,27 +122,25 @@ The plugin target is a thin distribution wrapper around the same workflow: compa
 
 The server exposes typed tools for scan, read, create, update, add-frontmatter, move, backup create/list/inspect, migrate wiki-to-fundus, area init, index status/rebuild, archive candidates/apply/restore/cleanup/status, and doctor diagnostics. Each tool resolves the active project root, configuration, project name, and optional area scope before calling the existing helper functions. Optional `project_root`, `project`, and `area` arguments let Codex override those values when the server process cwd is not the repository being documented.
 
-Codex normally launches the server command as a child process:
+Codex normally launches the server from the plugin's `.mcp.json` registration:
 
 ```text
-python /Users/christian/.codex/skills/fundus/scripts/fundus_mcp.py
+python ./skills/fundus/scripts/fundus_mcp.py
 ```
 
-The process stays alive while the MCP client uses it and exits when the client disconnects. The Python environment that launches the server only needs the standard library and the bundled Fundus files; `fundus_mcp.py --check` verifies construction.
+The command runs relative to the installed plugin root. The process stays alive while the MCP client uses it and exits when the client disconnects. The Python environment that launches the server only needs the standard library and the bundled Fundus files; `fundus_mcp.py --check` verifies construction.
 
 ## Codex Approvals
 
-Codex should run the installed script directly with a reusable command prefix matching the Python command available in the Codex environment:
+Codex should prefer the plugin-provided MCP tools for normal Fundus reads and writes. If MCP tools are unavailable and Codex must use the CLI helper directly, it should run the helper from the repository build or from the exact installed plugin cache path shown by `codex plugin add` / `codex plugin list`.
+
+Plugin cache paths are versioned:
 
 ```text
-python /Users/christian/.codex/skills/fundus/scripts/fundus.py
+~/.codex/plugins/cache/fundus-local/fundus/<version>/skills/fundus/scripts/fundus.py
 ```
 
-Use `python3` instead when that is the command Codex will actually run:
-
-```text
-python3 /Users/christian/.codex/skills/fundus/scripts/fundus.py
-```
+The old direct-skill path `~/.codex/skills/fundus/scripts/fundus.py` is valid only when the legacy `task install:codex` target has intentionally been used.
 
 Codex approvals are command-prefix based, not skill-name based. This repository cannot declare a semantic "allow all fundus skill calls" rule by itself. The interpreter token is part of the matched prefix, so `python .../fundus.py` and `python3 .../fundus.py` need separate rules. The command allowlist is also separate from filesystem sandboxing: the helper can be an approved command and still need escalated sandbox permissions when it writes to an Obsidian vault outside the active workspace.
 
@@ -149,29 +148,19 @@ The operational distinction matters:
 
 - Read-only helper calls such as `scan`, `read`, `doctor`, `index status`, and `archive candidates` should run without escalated sandbox permissions.
 - Write-like helper calls such as `create`, `update`, `add-frontmatter`, `index rebuild`, `archive apply`, `archive restore`, and `archive cleanup` need escalated sandbox permissions when the vault is outside the writable workspace.
-- If the helper prefix is already allowlisted, Codex should not pass another `prefix_rule` for routine Fundus commands. When the tool API requires a `justification` for escalation, the wording should be terse and operational instead of asking the user for another durable approval.
-- Codex should suggest a durable prefix rule only when the helper prefix is missing, the command was denied, or the command shape does not match the existing rule.
+- If the exact helper prefix is already allowlisted, Codex should not pass another `prefix_rule` for routine Fundus commands. When the tool API requires a `justification` for escalation, the wording should be terse and operational instead of asking the user for another durable approval.
+- Codex should suggest a durable prefix rule only when direct CLI fallback is needed and the helper prefix is missing, denied, or shaped differently from the existing rule.
 
-For durable allowlisting, configure Codex Rules outside the skill, for example in `~/.codex/rules/default.rules`:
+For durable CLI allowlisting, configure Codex Rules outside the skill with the exact interpreter and helper path Codex will run. A plugin cache-bust reinstall changes the versioned plugin cache path, so MCP tools are the steadier day-to-day interface.
 
-```starlark
-prefix_rule(
-    pattern=["python", "/Users/christian/.codex/skills/fundus/scripts/fundus.py"],
-    decision="allow",
-    justification="Allow the vetted Fundus helper without repeated prompts",
-)
-```
-
-For `python3` environments, use the same rule with `pattern=["python3", "/Users/christian/.codex/skills/fundus/scripts/fundus.py"]`.
-
-This allowlist trusts commands that start with the matching script prefix. It does not inspect every file write, network call, or subprocess inside the Python process, so the helper should remain small, deterministic, and constrained to the configured vault.
+An allowlist trusts commands that start with the matching script prefix. It does not inspect every file write, network call, or subprocess inside the Python process, so the helper should remain small, deterministic, and constrained to the configured vault.
 
 `SKILL.md` tells Codex to keep the allowlisted helper invocation simple. Inline `--content` is appropriate for short, simple, single-line content. Multiline or quote-heavy Markdown should be passed with `--content-file` from a sandbox-writable temporary path such as `/private/tmp`. This avoids shell-heavy command shapes, including here-docs, `$'...'` strings, command substitutions, redirections, and long `/bin/zsh -lc ...` payloads. Those forms can fail Codex's conservative command-prefix matching even when the underlying Python helper prefix is allowlisted.
 
 Good allowlisted write shape:
 
 ```text
-sandbox_permissions=require_escalated + exact installed helper command + --content-file /private/tmp/fundus-update.md + no prefix_rule
+sandbox_permissions=require_escalated + exact helper command + --content-file /private/tmp/fundus-update.md + no prefix_rule
 ```
 
 Avoid for already-allowlisted helpers:
@@ -180,9 +169,9 @@ Avoid for already-allowlisted helpers:
 sandbox_permissions=require_escalated + shell wrapper or inline multiline content + repeated prefix_rule request
 ```
 
-In a normal `workspace-write` session, the repository is writable but `/Users/christian/vault/Hypatos` is not necessarily part of the sandbox. For commands that create, update, archive, restore, clean up, or rebuild the index, Codex should therefore invoke the exact installed helper command with escalated sandbox permissions. If the prefix rule above is loaded, the escalation should be covered by the existing approval and should not produce a new prompt. An alternative is launching Codex with `--add-dir /Users/christian/vault/Hypatos`, which makes the vault an explicit writable root for the session.
+In a normal `workspace-write` session, the repository is writable but `/Users/christian/vault/Hypatos` is not necessarily part of the sandbox. For commands that create, update, archive, restore, clean up, or rebuild the index, Codex should therefore use MCP tools or invoke the exact helper command with escalated sandbox permissions. If the relevant prefix rule is loaded, the escalation should be covered by the existing approval and should not produce a new durable-rule prompt. An alternative is launching Codex with `--add-dir /Users/christian/vault/Hypatos`, which makes the vault an explicit writable root for the session.
 
-The helper allowlist is separate from repository maintenance. Installing the source package with `task install` or `task install:codex` writes outside the active workspace into the Codex configuration directory. Those commands need their own approval/rules and should only be run when the installed skill copy must be refreshed, not during routine Fundus note writes.
+The helper allowlist is separate from repository maintenance. Installing the plugin with `task install` or the legacy direct skill with `task install:codex` writes outside the active workspace into the Codex configuration directory. Those commands need their own approval/rules and should only be run when the installed plugin or legacy skill copy must be refreshed, not during routine Fundus note writes.
 
 ## Configuration
 
@@ -190,13 +179,13 @@ Config precedence:
 
 1. `OBSIDIAN_VAULT_PATH` overrides only `vault_path`.
 2. `.codex/fundus.json` overrides skill defaults for the active project.
-3. `config.json` in the installed skill directory provides local defaults.
+3. `config.json` in the packaged skill runtime provides local defaults.
 
 The script rejects writes outside the configured vault root.
 
 ## Installation
 
-`Taskfile.yml` first builds `dist/fundus`, then copies only runtime files into the Codex skill directory:
+`Taskfile.yml` first builds `dist/fundus`, then packages only runtime files into the plugin:
 
 - `SKILL.md`
 - `config.json`
@@ -212,3 +201,5 @@ Repository docs, examples, and development files are intentionally not installed
 
 - `dist/fundus-plugin`: plugin root with `.codex-plugin/plugin.json`, `.mcp.json`, and `skills/fundus/`.
 - `dist/fundus-marketplace`: local test marketplace with `.agents/plugins/marketplace.json` and `plugins/fundus/`.
+
+`task install:codex` still copies `dist/fundus` into `~/.codex/skills/fundus` for legacy recovery only. Do not use it alongside the plugin, because Codex will surface duplicate `fundus` skills.

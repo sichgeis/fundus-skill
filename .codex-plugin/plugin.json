@@ -6,8 +6,8 @@
     "name": "Christian",
     "url": "https://github.com/sichgeis"
   },
-  "homepage": "https://github.com/sichgeis/fundus-skill",
-  "repository": "https://github.com/sichgeis/fundus-skill",
+  "homepage": "https://github.com/sichgeis/fundus-codex-plugin",
+  "repository": "https://github.com/sichgeis/fundus-codex-plugin",
   "license": "MIT",
   "keywords": [
     "fundus",
@@ -28,7 +28,7 @@
       "Interactive",
       "Write"
     ],
-    "websiteURL": "https://github.com/sichgeis/fundus-skill",
+    "websiteURL": "https://github.com/sichgeis/fundus-codex-plugin",
     "privacyPolicyURL": "https://openai.com/policies/privacy-policy/",
     "termsOfServiceURL": "https://openai.com/policies/terms-of-use/",
     "defaultPrompt": [

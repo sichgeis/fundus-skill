@@ -1,17 +1,25 @@
 # Fundus Skill
 
-This repository is the source of truth for the local `fundus` Agent Skill.
+This repository is the source of truth for the local Codex `fundus` skill.
 
-The skill persists codebase knowledge into an Obsidian vault as per-repository Fundus documents and explicit cross-repository areas. The same skill package can be installed for Codex, Claude Code, and ForgeCode.
+The skill persists codebase knowledge into an Obsidian vault as per-repository Fundus documents and explicit cross-repository areas. It is packaged for Codex, with an optional local MCP server for typed Fundus tools.
 
 Existing Fundus documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
 Created documents keep one generated top-level title heading; duplicate matching H1 headings in supplied content are removed automatically.
-Search is backed by a lightweight JSON index at `{vault_path}/{fundus_dir}/.fundus-index.json` when present, so agents can find likely matching notes from titles, tags, filenames, headings, ticket IDs, and short excerpts without reading every note body. Old notes can be archived reversibly under `{vault_path}/{fundus_dir}/_archive/...`, with nested area paths mirrored under the archive root.
+Search is backed by a lightweight JSON index at `{vault_path}/{fundus_dir}/.fundus-index.json` when present, so Codex can find likely matching notes from titles, tags, filenames, headings, ticket IDs, and short excerpts without reading every note body. Old notes can be archived reversibly under `{vault_path}/{fundus_dir}/_archive/...`, with nested area paths mirrored under the archive root.
+
+## Current Direction
+
+Fundus is being refined into Christian's personal Codex workbench for durable work knowledge. The workbench should stay explicit: use it to search, save, retrieve, update, and curate Fundus knowledge. During ticket or research work, Codex may also do a read-only Fundus lookup when prior context is likely useful.
+
+Fundus is evidence, not authority. Source code remains the source of truth for implemented behavior; Fundus helps discover business ideas, technical concepts, prior decisions, and discussion history. When Fundus appears stale, Codex should propose a concise correction instead of silently rewriting it, unless the user explicitly asks to propagate new learning into Fundus.
+
+The live legacy corpus currently exists under `/Users/christian/vault/Hypatos/Wiki`. The target canonical corpus is `/Users/christian/vault/Hypatos/Fundus`. The next major setup work is a verified one-time migration from `Wiki/` to `Fundus/`, including active notes, quiet archived-note preservation, strict reserved-file cleanup for `index.md` and `log.md`, and an index rebuild. See `docs/fundus-plugin-roadmap.md` for the full implementation roadmap.
 
 ## Layout
 
-- `SKILL.md`: agent-agnostic skill manifest and operating instructions.
-- `commands/`: slash-command wrappers that invoke the skill from supported agents.
+- `SKILL.md`: Codex skill manifest and operating instructions.
+- `agents/openai.yaml`: Codex app metadata and invocation policy.
 - `scripts/fundus.py`: deterministic scan/read/create/update/index/archive/doctor tool for Fundus documents.
 - `scripts/fundus_mcp.py`: stdio MCP server exposing the same Fundus operations as typed tools.
 - `config.json`: local default configuration used by the installed skill.
@@ -19,6 +27,11 @@ Search is backed by a lightweight JSON index at `{vault_path}/{fundus_dir}/.fund
 - `requirements.txt`: Python runtime dependency list for the MCP server.
 - `docs/`: project documentation for maintainers.
 - `Taskfile.yml`: local development tasks.
+
+## Roadmap Documents
+
+- `docs/fundus-plugin-roadmap.md`: current target picture, DDD decisions, migration plan, plugin roadmap, and backlog.
+- `docs/implementation.md`: current helper, MCP, packaging, permissions, and runtime notes.
 
 ## Build
 
@@ -38,43 +51,29 @@ Only runtime files are copied into the package.
 
 ## Install
 
-Install for all supported agents:
+Install for Codex:
 
 ```bash
 task install
 ```
 
-Or install one target:
+The explicit Codex target is equivalent:
 
 ```bash
 task install:codex
-task install:claude
-task install:forge
 ```
 
-The install targets copy the same built package into:
+The install target copies the built package into:
 
 ```text
 ~/.codex/skills/fundus
-~/.claude/skills/fundus
-~/.forge/skills/fundus
 ```
 
-They also install the `document` command into each agent's command location:
-
-```text
-~/.codex/prompts/document.md
-~/.claude/commands/document.md
-~/.agents/commands/document.md
-```
-
-Use it as `/document ...` in Codex and Claude Code. In ForgeCode, use the native command form `:document ...`.
-
-Restart the target agent after installing or changing the skill so the skill manifest is reloaded.
+It also removes stale pre-Fundus and retired prompt-wrapper installs from the Codex home. Restart Codex after installing or changing the skill so the skill manifest is reloaded.
 
 ## MCP Server
 
-The package also includes a local stdio MCP server. MCP clients such as Codex launch this command as a child process and keep it alive while the client session is using the server:
+The package also includes a local stdio MCP server. Codex launches this command as a child process and keeps it alive while the session is using the server:
 
 ```bash
 python /path/to/fundus/scripts/fundus_mcp.py
@@ -86,19 +85,18 @@ Install the Python MCP SDK in the environment that will run the server:
 pip install -r /path/to/fundus/requirements.txt
 ```
 
-Example Codex MCP configuration:
+Example `~/.codex/config.toml` entry:
 
-```json
-{
-  "mcpServers": {
-    "fundus": {
-      "command": "python",
-      "args": [
-        "/Users/christian/.codex/skills/fundus/scripts/fundus_mcp.py"
-      ]
-    }
-  }
-}
+```toml
+[mcp_servers.fundus]
+command = "python"
+args = ["/Users/christian/.codex/skills/fundus/scripts/fundus_mcp.py"]
+```
+
+The same server can be registered through the Codex CLI:
+
+```bash
+codex mcp add fundus -- python /Users/christian/.codex/skills/fundus/scripts/fundus_mcp.py
 ```
 
 The MCP server exposes typed tools for scanning, reading, creating, updating, moving, backing up, area initialization, indexing, archiving, restoring, cleaning up, and diagnosing Fundus notes. It uses the same configuration precedence, path confinement, redaction, atomic writes, index refresh behavior, and archive behavior as `scripts/fundus.py`.
@@ -130,6 +128,8 @@ python dist/fundus/scripts/fundus.py area init --area "Epics/AI Agent Templates"
 ```
 
 This creates `index.md`, `log.md`, `overview.md`, and standard subfolders without overwriting existing files.
+
+The refined target profile treats active non-reserved notes as OKF-compatible concept notes. Reserved `index.md` and `log.md` files should become pure OKF reserved files without frontmatter during the canonical `Fundus/` migration. Concept metadata belongs in regular notes such as `overview.md`.
 
 ## Frontmatter Normalization
 
@@ -179,20 +179,20 @@ For fast documentation runs in Codex, approve the installed helper prefix that m
 python /Users/christian/.codex/skills/fundus/scripts/fundus.py
 ```
 
-Use `python3` instead of `python` only when that is the command available in the agent environment.
+Use `python3` instead of `python` only when that is the command available in the Codex environment.
 
 Codex has two separate gates:
 
 - Command approval: whether the proposed command is trusted.
 - Filesystem sandboxing: whether the command may write outside the active workspace.
 
-Codex approvals are command-prefix based, not skill-name based. The interpreter token is part of that prefix: a rule for `python .../fundus.py` does not match `python3 .../fundus.py`. There is no separate "allow this whole skill" switch in `SKILL.md`; permission belongs in Codex's sandbox, approval policy, and rules configuration. Because the default vault is `/Users/christian/vault/Hypatos`, normal Fundus writes usually happen outside repository workspaces. In `workspace-write` sessions, agents should run write-like helper commands as the exact installed Python command with escalated sandbox permissions.
+Codex approvals are command-prefix based, not skill-name based. The interpreter token is part of that prefix: a rule for `python .../fundus.py` does not match `python3 .../fundus.py`. There is no separate "allow this whole skill" switch in `SKILL.md`; permission belongs in Codex's sandbox, approval policy, and rules configuration. Because the default vault is `/Users/christian/vault/Hypatos`, normal Fundus writes usually happen outside repository workspaces. In `workspace-write` sessions, Codex should run write-like helper commands as the exact installed Python command with escalated sandbox permissions.
 
 Once the helper prefix is already allowlisted, routine Fundus writes should not propose a fresh `prefix_rule`. If the Codex tool API still requires a `justification` for `sandbox_permissions=require_escalated`, keep that wording terse and operational rather than presenting it as another durable approval request. Only suggest the durable rule when the prefix is missing, the command is denied, or the command shape does not match the existing rule.
 
 To make the permission durable, add a Codex rule in `~/.codex/rules/default.rules` and restart Codex:
 
-You can also ask the coding agent to add or update this allow rule for you. The agent can edit the rules file and run the required setup commands, subject to the normal approval prompts for changing Codex configuration.
+You can also ask Codex to add or update this allow rule for you. Codex can edit the rules file and run the required setup commands, subject to the normal approval prompts for changing Codex configuration.
 
 ```starlark
 prefix_rule(
@@ -202,11 +202,11 @@ prefix_rule(
 )
 ```
 
-Use the same shape with `pattern=["python3", "/Users/christian/.codex/skills/fundus/scripts/fundus.py"]` if `python3` is the command the agent will actually run.
+Use the same shape with `pattern=["python3", "/Users/christian/.codex/skills/fundus/scripts/fundus.py"]` if `python3` is the command Codex will actually run.
 
 This trusts invocations of that helper script through the matching prefix; it is not a fine-grained audit of every file write or subprocess inside Python. Keep the helper small, deterministic, and path-constrained.
 
-This rule covers the installed Fundus helper only. It does not cover repository maintenance commands such as `task install`, `task install:codex`, or direct edits under `~/.codex`; those are separate filesystem writes outside the active workspace and may still require their own approval or durable rule. Do not run install tasks during normal Fundus documentation. Install only after changing the skill source and when the installed agent copy actually needs to be refreshed.
+This rule covers the installed Fundus helper only. It does not cover repository maintenance commands such as `task install`, `task install:codex`, or direct edits under `~/.codex`; those are separate filesystem writes outside the active workspace and may still require their own approval or durable rule. Do not run install tasks during normal Fundus documentation. Install only after changing the skill source and when the installed skill copy actually needs to be refreshed.
 
 For Codex, keep the helper invocation itself simple so the prefix rule can match it. Read-only helper calls such as `scan`, `read`, `doctor`, `index status`, and `archive candidates` do not need escalated sandbox permissions. Use inline `--content` only for short, simple, single-line content. For multiline or quote-heavy Markdown, write the body to a temporary file in a sandbox-writable location such as `/private/tmp`, then call the helper with `--content-file`:
 
@@ -299,12 +299,10 @@ task verify
 
 This builds the package, checks the CLI and MCP script entrypoints, and runs the unit tests.
 
-After installing, verify agent-specific installs with:
+After installing, verify the Codex install with:
 
 ```bash
 task verify:codex
-task verify:claude
-task verify:forge
 ```
 
 You can also run the built or installed script directly:
@@ -319,7 +317,7 @@ python dist/fundus/scripts/fundus_mcp.py --help
 Configuration resolves in this order:
 
 1. `OBSIDIAN_VAULT_PATH`
-2. project-local `.agents/fundus.json`
+2. project-local `.codex/fundus.json`
 3. installed skill-local `config.json`
 
 Default configuration targets:
@@ -328,11 +326,13 @@ Default configuration targets:
 /Users/christian/vault/Hypatos/Fundus
 ```
 
+Current local note history is still under `/Users/christian/vault/Hypatos/Wiki` until the planned migration runs. Do not treat both trees as live canonical sources after migration; `Fundus/` should become the single work knowledge root.
+
 ## Update Workflow
 
 1. Edit the source files in this repository.
 2. Run `task verify`.
 3. Run `task install`.
-4. Start a new agent session.
+4. Start a new Codex session.
 
 The installed skill is a copied directory, so repository changes are not reflected globally until the install task runs again.

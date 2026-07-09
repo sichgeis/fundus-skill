@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,8 +36,20 @@ INDEX_VERSION = 1
 MAX_INDEX_EXCERPT_CHARS = 600
 MAX_SCAN_RESULTS = 20
 ARCHIVE_DIRNAME = "_archive"
+BACKUP_DIRNAME = ".obsidian-wiki-backups"
+BACKUP_MANIFEST_FILENAME = "manifest.json"
+RESERVED_WIKI_DIRNAMES = {ARCHIVE_DIRNAME, BACKUP_DIRNAME}
 ARCHIVE_DURABLE_TAGS = {"project-overview", "architecture", "runbook", "glossary"}
 ARCHIVE_BOOST_TAGS = {"ticket", "review", "investigation", "refinement"}
+AREA_SUBDIRECTORIES = [
+    "decisions",
+    "open-questions",
+    "stories",
+    "interviews",
+    "domain-model",
+    "implementation-map",
+    "references",
+]
 
 
 class WikiError(Exception):
@@ -49,6 +63,13 @@ class Config:
     default_tags: list[str]
     redaction_enabled: bool
     redaction_patterns: list[str]
+
+
+@dataclass(frozen=True)
+class Scope:
+    kind: str
+    path: str
+    display_name: str
 
 
 @dataclass
@@ -152,6 +173,10 @@ def slugify(value: str) -> str:
     return slug
 
 
+def slugify_path(value: str) -> str:
+    return "/".join(slugify(part) for part in value.split("/") if part.strip())
+
+
 def detect_project_name(project_root: Path) -> str:
     try:
         result = subprocess.run(
@@ -192,6 +217,41 @@ def wiki_project_dir(config: Config, project_name: str) -> Path:
     return ensure_within(config.vault_path, project_dir)
 
 
+def normalize_area_path(area: str) -> str:
+    original = area.strip()
+    if Path(original).is_absolute():
+        raise WikiError("--area must be relative to the wiki root.")
+    raw = original.strip("/")
+    if not raw:
+        raise WikiError("--area must not be empty.")
+    path = Path(raw)
+    parts = [part for part in raw.split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        raise WikiError("--area must not contain '.' or '..' path segments.")
+    if parts[0] in RESERVED_WIKI_DIRNAMES:
+        raise WikiError(f"--area must not target reserved wiki directory: {parts[0]}")
+    return "/".join(parts)
+
+
+def project_scope(project_name: str) -> Scope:
+    return Scope(kind="project", path=project_name, display_name=project_name)
+
+
+def area_scope(area: str) -> Scope:
+    normalized = normalize_area_path(area)
+    return Scope(kind="area", path=normalized, display_name=normalized)
+
+
+def resolve_scope(project_name: str, area: str | None = None) -> Scope:
+    if area:
+        return area_scope(area)
+    return project_scope(project_name)
+
+
+def wiki_scope_dir(config: Config, scope: Scope) -> Path:
+    return ensure_within(config.vault_path, wiki_root_dir(config) / scope.path)
+
+
 def wiki_archive_dir(config: Config) -> Path:
     return ensure_within(config.vault_path, wiki_root_dir(config) / ARCHIVE_DIRNAME)
 
@@ -200,8 +260,16 @@ def wiki_archive_project_dir(config: Config, project_name: str) -> Path:
     return ensure_within(config.vault_path, wiki_archive_dir(config) / project_name)
 
 
+def wiki_archive_scope_dir(config: Config, scope: Scope) -> Path:
+    return ensure_within(config.vault_path, wiki_archive_dir(config) / scope.path)
+
+
 def wiki_root_dir(config: Config) -> Path:
     return ensure_within(config.vault_path, config.vault_path / config.wiki_dir)
+
+
+def wiki_relative_path(config: Config, path: Path) -> str:
+    return str(ensure_within(config.vault_path, path).relative_to(wiki_root_dir(config)))
 
 
 def wiki_project_names(config: Config) -> list[str]:
@@ -217,6 +285,10 @@ def wiki_project_names(config: Config) -> list[str]:
 
 def index_path(config: Config) -> Path:
     return ensure_within(config.vault_path, wiki_root_dir(config) / INDEX_FILENAME)
+
+
+def backup_root_dir(config: Config) -> Path:
+    return ensure_within(config.vault_path, config.vault_path / BACKUP_DIRNAME)
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -257,27 +329,53 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 def format_frontmatter(data: dict[str, Any]) -> str:
     lines = ["---"]
     ordered_keys = [
+        "type",
         "title",
+        "description",
+        "id",
+        "resource",
+        "scope",
+        "scope_path",
         "created",
         "updated",
+        "timestamp",
         "project",
+        "projects",
+        "repos",
+        "aliases",
+        "status",
+        "owner",
+        "last_verified",
         "archived",
         "archived_at",
         "archived_reason",
         "original_path",
+        "moved_from",
+        "moved_to",
+        "supersedes",
         "tags",
     ]
+    seen: set[str] = set()
+
+    def append_value(key: str, value: Any) -> None:
+        seen.add(key)
+        if isinstance(value, list):
+            lines.append(f"{key}:")
+            for item in value:
+                lines.append(f"  - {item}")
+            return
+        if isinstance(value, bool):
+            value = str(value).lower()
+        if value is not None:
+            lines.append(f"{key}: {value}")
+
     for key in ordered_keys:
         value = data.get(key)
-        if key == "tags":
-            lines.append("tags:")
-            for tag in value or []:
-                lines.append(f"  - {tag}")
-            continue
         if value is not None:
-            if isinstance(value, bool):
-                value = str(value).lower()
-            lines.append(f"{key}: {value}")
+            append_value(key, value)
+    for key, value in data.items():
+        if key not in seen and value is not None:
+            append_value(key, value)
     lines.append("---")
     return "\n".join(lines)
 
@@ -294,6 +392,18 @@ def read_content_arg(content: str | None, content_file: str | None) -> str:
 def normalize_tags(config: Config, project_name: str, extra_tags: list[str] | None) -> list[str]:
     tags: list[str] = []
     for tag in config.default_tags + [f"project/{project_name}"] + (extra_tags or []):
+        normalized = tag.strip()
+        if normalized and normalized not in tags:
+            tags.append(normalized)
+    return tags
+
+
+def normalize_scope_tags(config: Config, project_name: str, scope: Scope, extra_tags: list[str] | None) -> list[str]:
+    if scope.kind == "project":
+        return normalize_tags(config, project_name, extra_tags)
+    tags: list[str] = []
+    area_tag = f"area/{slugify_path(scope.path)}"
+    for tag in config.default_tags + [area_tag] + (extra_tags or []):
         normalized = tag.strip()
         if normalized and normalized not in tags:
             tags.append(normalized)
@@ -328,6 +438,111 @@ def atomic_write(path: Path, content: str) -> None:
         tmp.write(content)
         tmp_path = Path(tmp.name)
     tmp_path.replace(path)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def backup_id_for(label: str | None, timestamp: datetime | None = None) -> str:
+    created = timestamp or datetime.now().astimezone()
+    suffix = slugify(label or "backup")
+    return f"{created.strftime('%Y%m%dT%H%M%S%z')}-{suffix}"
+
+
+def iter_backup_source_files(config: Config) -> list[Path]:
+    root = wiki_root_dir(config)
+    if not root.exists():
+        raise WikiError(f"Wiki root does not exist: {root}")
+    files: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative_parts = path.relative_to(root).parts
+        if any(part == BACKUP_DIRNAME for part in relative_parts):
+            continue
+        files.append(path)
+    return sorted(files)
+
+
+def create_backup(config: Config, label: str | None = None) -> dict[str, Any]:
+    created_at = datetime.now().astimezone()
+    backup_id = backup_id_for(label, created_at)
+    root = wiki_root_dir(config)
+    backup_root = backup_root_dir(config)
+    destination_root = ensure_within(config.vault_path, backup_root / backup_id)
+    if destination_root.exists():
+        raise WikiError(f"Backup already exists: {backup_id}")
+
+    files = iter_backup_source_files(config)
+    copied_files: list[dict[str, Any]] = []
+    total_bytes = 0
+
+    for source_path in files:
+        relative_path = source_path.relative_to(root)
+        destination_path = ensure_within(config.vault_path, destination_root / config.wiki_dir / relative_path)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination_path)
+        size = source_path.stat().st_size
+        total_bytes += size
+        copied_files.append(
+            {
+                "path": str((Path(config.wiki_dir) / relative_path).as_posix()),
+                "size": size,
+                "sha256": file_sha256(source_path),
+            }
+        )
+
+    manifest = {
+        "id": backup_id,
+        "label": label or "backup",
+        "created": created_at.isoformat(),
+        "source_vault_path": str(config.vault_path),
+        "source_wiki_dir": config.wiki_dir,
+        "source_wiki_path": str(root),
+        "backup_path": str(destination_root),
+        "file_count": len(copied_files),
+        "byte_count": total_bytes,
+        "files": copied_files,
+    }
+    atomic_write(destination_root / BACKUP_MANIFEST_FILENAME, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest
+
+
+def list_backups(config: Config) -> list[dict[str, Any]]:
+    root = backup_root_dir(config)
+    if not root.exists():
+        return []
+    backups: list[dict[str, Any]] = []
+    for manifest_path in sorted(root.glob(f"*/{BACKUP_MANIFEST_FILENAME}")):
+        manifest = load_json(manifest_path)
+        backups.append(
+            {
+                "id": manifest.get("id") or manifest_path.parent.name,
+                "label": manifest.get("label"),
+                "created": manifest.get("created"),
+                "file_count": manifest.get("file_count"),
+                "byte_count": manifest.get("byte_count"),
+                "backup_path": manifest.get("backup_path") or str(manifest_path.parent),
+            }
+        )
+    backups.sort(key=lambda item: str(item.get("created") or ""), reverse=True)
+    return backups
+
+
+def inspect_backup(config: Config, backup_id: str) -> dict[str, Any]:
+    if not backup_id or "/" in backup_id or "\\" in backup_id or backup_id in {".", ".."}:
+        raise WikiError("Backup id must be a single backup directory name.")
+    manifest_path = ensure_within(config.vault_path, backup_root_dir(config) / backup_id / BACKUP_MANIFEST_FILENAME)
+    if not manifest_path.exists():
+        raise WikiError(f"Backup does not exist: {backup_id}")
+    manifest = load_json(manifest_path)
+    manifest["manifest_path"] = str(manifest_path)
+    return manifest
 
 
 def load_document(path: Path, vault_root: Path) -> Document:
@@ -385,12 +600,51 @@ def make_excerpt(body: str) -> str:
     return text[:MAX_INDEX_EXCERPT_CHARS]
 
 
-def index_entry_for_document(doc: Document) -> dict[str, Any]:
+def wiki_relative_parts_from_vault_path(config: Config, path: Path) -> tuple[str, ...]:
+    try:
+        return tuple(ensure_within(config.vault_path, path).relative_to(wiki_root_dir(config)).parts)
+    except ValueError:
+        return ()
+
+
+def active_wiki_relative_path_for_document(config: Config, doc: Document) -> str:
+    original_path = str(doc.frontmatter.get("original_path") or "")
+    if original_path:
+        try:
+            original = resolve_doc_path(config, original_path)
+            return wiki_relative_path(config, original)
+        except WikiError:
+            pass
+    parts = list(wiki_relative_parts_from_vault_path(config, doc.path))
+    if parts and parts[0] == ARCHIVE_DIRNAME:
+        return "/".join(parts[1:])
+    return "/".join(parts)
+
+
+def scope_metadata_for_document(config: Config, doc: Document) -> dict[str, Any]:
+    explicit_scope = str(doc.frontmatter.get("scope") or "")
+    explicit_scope_path = str(doc.frontmatter.get("scope_path") or "")
+    active_relative = active_wiki_relative_path_for_document(config, doc)
+    parent_path = str(Path(active_relative).parent).replace(".", "")
+
+    if explicit_scope == "area" or explicit_scope_path:
+        scope_path = explicit_scope_path or parent_path
+        return {"scope": "area", "scope_path": scope_path, "area": scope_path}
+    if doc.project:
+        return {"scope": "project", "scope_path": doc.project, "area": None}
+    if parent_path:
+        return {"scope": "area", "scope_path": parent_path, "area": parent_path}
+    return {"scope": "area", "scope_path": "", "area": ""}
+
+
+def index_entry_for_document(config: Config, doc: Document) -> dict[str, Any]:
     source_text = " ".join([doc.relative_path, doc.title, *doc.tags, *extract_headings(doc.body), doc.body])
     archived = frontmatter_bool(doc.frontmatter.get("archived")) or f"/{ARCHIVE_DIRNAME}/" in f"/{doc.relative_path}"
+    scope_metadata = scope_metadata_for_document(config, doc)
     return {
         "path": doc.relative_path,
         "project": doc.project,
+        **scope_metadata,
         "title": doc.title,
         "tags": doc.tags,
         "updated": doc.updated,
@@ -412,10 +666,11 @@ def iter_wiki_markdown_paths(config: Config) -> list[Path]:
         return []
     active_paths = [
         path
-        for path in root.glob("*/*.md")
-        if path.parent.name != ARCHIVE_DIRNAME and ARCHIVE_DIRNAME not in path.relative_to(root).parts
+        for path in root.rglob("*.md")
+        if ARCHIVE_DIRNAME not in path.relative_to(root).parts
+        and BACKUP_DIRNAME not in path.relative_to(root).parts
     ]
-    archive_paths = list(wiki_archive_dir(config).glob("*/*.md")) if wiki_archive_dir(config).exists() else []
+    archive_paths = list(wiki_archive_dir(config).rglob("*.md")) if wiki_archive_dir(config).exists() else []
     return sorted([*active_paths, *archive_paths])
 
 
@@ -444,9 +699,7 @@ def rebuild_index(config: Config) -> dict[str, Any]:
     documents: list[dict[str, Any]] = []
     for path in iter_wiki_markdown_paths(config):
         doc = load_document(path, config.vault_path)
-        if not doc.project:
-            doc.project = path.parent.name
-        documents.append(index_entry_for_document(doc))
+        documents.append(index_entry_for_document(config, doc))
     return write_index(config, documents)
 
 
@@ -459,7 +712,7 @@ def refresh_index_entry(config: Config, path: Path) -> None:
     relative_path = str(safe_path.relative_to(config.vault_path))
     documents = [doc for doc in existing_index["documents"] if doc.get("path") != relative_path]
     if safe_path.exists():
-        documents.append(index_entry_for_document(load_document(safe_path, config.vault_path)))
+        documents.append(index_entry_for_document(config, load_document(safe_path, config.vault_path)))
     write_index(config, documents)
 
 
@@ -517,6 +770,13 @@ def present_index_entry(entry: dict[str, Any], score: int | None = None, reason:
         "tags": entry.get("tags") or [],
         "updated": entry.get("updated"),
     }
+    if entry.get("project"):
+        payload["project"] = entry.get("project")
+    if entry.get("scope"):
+        payload["scope"] = entry.get("scope")
+        payload["scope_path"] = entry.get("scope_path")
+    if entry.get("area"):
+        payload["area"] = entry.get("area")
     if entry.get("archived"):
         payload["archived"] = True
         payload["original_path"] = entry.get("original_path")
@@ -537,6 +797,28 @@ def resolve_doc_path(config: Config, path_arg: str) -> Path:
     return ensure_within(config.vault_path, config.vault_path / raw_path)
 
 
+def entry_matches_scope(entry: dict[str, Any], scope: Scope) -> bool:
+    path = str(entry.get("path") or "")
+    prefix = f"Wiki/{scope.path}/"
+    archive_prefix = f"Wiki/{ARCHIVE_DIRNAME}/{scope.path}/"
+    if scope.kind == "project":
+        return (
+            entry.get("scope") == "project"
+            and entry.get("scope_path") == scope.path
+        ) or entry.get("project") == scope.path
+    return path.startswith(prefix) or path.startswith(archive_prefix) or entry.get("scope_path") == scope.path
+
+
+def markdown_paths_for_scope(config: Config, scope: Scope, include_archived: bool = False) -> list[Path]:
+    active_dir = wiki_scope_dir(config, scope)
+    paths = sorted(active_dir.rglob("*.md")) if active_dir.exists() else []
+    if include_archived:
+        archive_dir = wiki_archive_scope_dir(config, scope)
+        if archive_dir.exists():
+            paths.extend(sorted(archive_dir.rglob("*.md")))
+    return paths
+
+
 def scan_documents(
     config: Config,
     project_name: str,
@@ -544,12 +826,14 @@ def scan_documents(
     limit: int = MAX_SCAN_RESULTS,
     include_snippet: bool = False,
     include_archived: bool = False,
+    scope: Scope | None = None,
 ) -> list[dict[str, Any]]:
+    active_scope = scope or project_scope(project_name)
     existing_index = load_index(config)
     if existing_index is not None:
         matches: list[tuple[int, str, dict[str, Any]]] = []
         for entry in existing_index["documents"]:
-            if entry.get("project") != project_name:
+            if not entry_matches_scope(entry, active_scope):
                 continue
             if entry.get("archived") and not include_archived:
                 continue
@@ -561,24 +845,21 @@ def scan_documents(
         matches.sort(key=lambda item: (-item[0], str(item[2].get("title", ""))))
         return [present_index_entry(entry, score, reason, include_snippet) for score, reason, entry in matches[:limit]]
 
-    project_dir = wiki_project_dir(config, project_name)
-    archive_project_dir = wiki_archive_project_dir(config, project_name)
-    if not project_dir.exists() and not (include_archived and archive_project_dir.exists()):
+    scope_dir = wiki_scope_dir(config, active_scope)
+    archive_scope_dir = wiki_archive_scope_dir(config, active_scope)
+    if not scope_dir.exists() and not (include_archived and archive_scope_dir.exists()):
         return []
 
     query_terms = tokenize(query or "")
     documents: list[dict[str, Any]] = []
-    scan_paths = sorted(project_dir.glob("*.md")) if project_dir.exists() else []
-    if include_archived:
-        if archive_project_dir.exists():
-            scan_paths.extend(sorted(archive_project_dir.glob("*.md")))
+    scan_paths = markdown_paths_for_scope(config, active_scope, include_archived)
 
     for path in scan_paths:
         doc = load_document(path, config.vault_path)
         haystack = " ".join([doc.title, *doc.tags, path.name]).lower()
         if query_terms and not all(term in haystack for term in query_terms):
             continue
-        documents.append(present_index_entry(index_entry_for_document(doc)))
+        documents.append(present_index_entry(index_entry_for_document(config, doc)))
 
     return documents[:limit]
 
@@ -603,29 +884,76 @@ def render_document(frontmatter: dict[str, Any], body: str) -> str:
     return f"{format_frontmatter(frontmatter)}\n\n# {frontmatter['title']}\n\n{cleaned_body}\n"
 
 
-def create_document(config: Config, project_name: str, title: str, body: str, extra_tags: list[str] | None) -> dict[str, Any]:
-    project_dir = wiki_project_dir(config, project_name)
+def default_document_id(scope: Scope, title: str) -> str:
+    return f"{scope.kind}/{slugify_path(scope.path)}/{slugify(title)}"
+
+
+def frontmatter_for_new_document(
+    config: Config,
+    project_name: str,
+    scope: Scope,
+    title: str,
+    extra_tags: list[str] | None,
+    doc_type: str | None = None,
+    description: str | None = None,
+    document_id: str | None = None,
+) -> dict[str, Any]:
+    timestamp = now_iso()
+    frontmatter: dict[str, Any] = {
+        "type": (doc_type or "Note").strip() or "Note",
+        "title": title.strip(),
+        "description": (description or title).strip(),
+        "id": (document_id or default_document_id(scope, title)).strip(),
+        "scope": scope.kind,
+        "scope_path": scope.path,
+        "created": timestamp,
+        "updated": timestamp,
+        "timestamp": timestamp,
+        "tags": normalize_scope_tags(config, project_name, scope, extra_tags),
+    }
+    if scope.kind == "project":
+        frontmatter["project"] = project_name
+    return frontmatter
+
+
+def create_document(
+    config: Config,
+    project_name: str,
+    title: str,
+    body: str,
+    extra_tags: list[str] | None,
+    scope: Scope | None = None,
+    doc_type: str | None = None,
+    description: str | None = None,
+    document_id: str | None = None,
+) -> dict[str, Any]:
+    active_scope = scope or project_scope(project_name)
+    project_dir = wiki_scope_dir(config, active_scope)
     slug = slugify(title)
     path = ensure_within(config.vault_path, project_dir / f"{slug}.md")
     if path.exists():
         raise WikiError(f"Document already exists: {path.relative_to(config.vault_path)}")
 
-    timestamp = now_iso()
-    frontmatter = {
-        "title": title.strip(),
-        "created": timestamp,
-        "updated": timestamp,
-        "project": project_name,
-        "tags": normalize_tags(config, project_name, extra_tags),
-    }
+    frontmatter = frontmatter_for_new_document(
+        config,
+        project_name,
+        active_scope,
+        title,
+        extra_tags,
+        doc_type,
+        description,
+        document_id,
+    )
     content = render_document(frontmatter, redact_secrets(body, config))
     atomic_write(path, content)
     refresh_index_entry(config, path)
     return {
         "path": str(path.relative_to(config.vault_path)),
         "title": title.strip(),
-        "created": timestamp,
-        "updated": timestamp,
+        "created": frontmatter["created"],
+        "updated": frontmatter["updated"],
+        "scope": active_scope.kind,
+        "scope_path": active_scope.path,
     }
 
 
@@ -677,6 +1005,7 @@ def update_document(
     mode: str,
     new_content: str,
     section: str | None,
+    scope: Scope | None = None,
 ) -> dict[str, Any]:
     path = resolve_doc_path(config, path_arg)
     if not path.exists():
@@ -700,10 +1029,38 @@ def update_document(
         raise WikiError(f"Unknown update mode: {mode}")
 
     frontmatter["updated"] = now_iso()
-    if not frontmatter.get("project"):
+    frontmatter["timestamp"] = frontmatter["updated"]
+    doc = Document(
+        path=path,
+        relative_path=str(path.relative_to(config.vault_path)),
+        title=str(frontmatter.get("title") or path.stem.replace("-", " ").title()),
+        project=str(frontmatter.get("project") or ""),
+        tags=list(frontmatter.get("tags") or []),
+        created=frontmatter.get("created"),
+        updated=frontmatter.get("updated"),
+        body=body,
+        frontmatter=frontmatter,
+    )
+    if scope is None:
+        if frontmatter.get("scope") == "area" or frontmatter.get("scope_path"):
+            metadata_scope = scope_metadata_for_document(config, doc)
+            active_scope = Scope(
+                kind=str(metadata_scope.get("scope") or "project"),
+                path=str(metadata_scope.get("scope_path") or project_name),
+                display_name=str(metadata_scope.get("scope_path") or project_name),
+            )
+        else:
+            active_scope = project_scope(project_name)
+    else:
+        active_scope = scope
+    if not frontmatter.get("scope"):
+        frontmatter["scope"] = active_scope.kind
+    if not frontmatter.get("scope_path"):
+        frontmatter["scope_path"] = active_scope.path
+    if active_scope.kind == "project" and not frontmatter.get("project"):
         frontmatter["project"] = project_name
     if not frontmatter.get("tags"):
-        frontmatter["tags"] = normalize_tags(config, project_name, [])
+        frontmatter["tags"] = normalize_scope_tags(config, project_name, active_scope, [])
 
     rendered = f"{format_frontmatter(frontmatter)}\n\n{updated_body.strip()}\n"
     atomic_write(path, rendered)
@@ -734,6 +1091,10 @@ def add_frontmatter_to_document(
     path_arg: str,
     title: str | None,
     extra_tags: list[str] | None,
+    scope: Scope | None = None,
+    doc_type: str | None = None,
+    description: str | None = None,
+    document_id: str | None = None,
 ) -> dict[str, Any]:
     path = resolve_doc_path(config, path_arg)
     if not path.exists():
@@ -745,13 +1106,21 @@ def add_frontmatter_to_document(
         raise WikiError(f"Document already has frontmatter: {path.relative_to(config.vault_path)}")
 
     timestamp = filesystem_timestamp(path)
-    frontmatter = {
-        "title": (title or path.stem.replace("-", " ").title()).strip(),
-        "created": timestamp,
-        "updated": timestamp,
-        "project": project_name,
-        "tags": normalize_tags(config, project_name, extra_tags),
-    }
+    active_scope = scope or project_scope(project_name)
+    note_title = (title or path.stem.replace("-", " ").title()).strip()
+    frontmatter = frontmatter_for_new_document(
+        config,
+        project_name,
+        active_scope,
+        note_title,
+        extra_tags,
+        doc_type,
+        description,
+        document_id,
+    )
+    frontmatter["created"] = timestamp
+    frontmatter["updated"] = timestamp
+    frontmatter["timestamp"] = timestamp
 
     atomic_write(path, render_existing_document(frontmatter, body))
     refresh_index_entry(config, path)
@@ -784,8 +1153,8 @@ def age_days(value: str | None) -> int | None:
 
 
 def archive_destination_for(config: Config, doc: Document) -> Path:
-    project_name = doc.project or doc.path.parent.name
-    return ensure_within(config.vault_path, wiki_archive_project_dir(config, project_name) / doc.path.name)
+    relative_path = Path(active_wiki_relative_path_for_document(config, doc))
+    return ensure_within(config.vault_path, wiki_archive_dir(config) / relative_path)
 
 
 def archive_candidates(
@@ -794,14 +1163,16 @@ def archive_candidates(
     older_than_days: int,
     limit: int,
     force: bool = False,
+    scope: Scope | None = None,
 ) -> list[dict[str, Any]]:
     cutoff = datetime.now().astimezone() - timedelta(days=older_than_days)
     candidates: list[dict[str, Any]] = []
-    project_dir = wiki_project_dir(config, project_name)
-    if not project_dir.exists():
+    active_scope = scope or project_scope(project_name)
+    scope_dir = wiki_scope_dir(config, active_scope)
+    if not scope_dir.exists():
         return []
 
-    for path in sorted(project_dir.glob("*.md")):
+    for path in sorted(scope_dir.rglob("*.md")):
         doc = load_document(path, config.vault_path)
         if not doc.frontmatter:
             candidates.append(
@@ -834,6 +1205,8 @@ def archive_candidates(
                 "updated": doc.updated,
                 "age_days": age_days(doc.updated or doc.created),
                 "reason": recommendation,
+                "scope": active_scope.kind,
+                "scope_path": active_scope.path,
             }
         )
 
@@ -872,11 +1245,17 @@ def remove_empty_directory(directory: Path, protected_directories: set[Path]) ->
     return True
 
 
-def cleanup_empty_directories(config: Config, project_name: str, global_scope: bool = False) -> dict[str, Any]:
+def cleanup_empty_directories(
+    config: Config,
+    project_name: str,
+    global_scope: bool = False,
+    scope: Scope | None = None,
+) -> dict[str, Any]:
     root = wiki_root_dir(config)
     archive_root = wiki_archive_dir(config)
     protected_directories = {root, archive_root}
-    candidate_roots = [root] if global_scope else [wiki_project_dir(config, project_name), wiki_archive_project_dir(config, project_name)]
+    active_scope = scope or project_scope(project_name)
+    candidate_roots = [root] if global_scope else [wiki_scope_dir(config, active_scope), wiki_archive_scope_dir(config, active_scope)]
     candidates: list[Path] = []
 
     for candidate_root in candidate_roots:
@@ -892,8 +1271,9 @@ def cleanup_empty_directories(config: Config, project_name: str, global_scope: b
             removed_paths.append(str(candidate.relative_to(config.vault_path)))
 
     return {
-        "scope": "global" if global_scope else "project",
-        "project": None if global_scope else project_name,
+        "scope": "global" if global_scope else active_scope.kind,
+        "scope_path": None if global_scope else active_scope.path,
+        "project": None if global_scope or active_scope.kind != "project" else project_name,
         "removed_directories": sorted(removed_paths),
         "removed_count": len(removed_paths),
     }
@@ -975,13 +1355,140 @@ def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
     }
 
 
-def archive_status(config: Config, project_name: str) -> dict[str, Any]:
-    active_dir = wiki_project_dir(config, project_name)
-    archive_dir = wiki_archive_project_dir(config, project_name)
-    active_count = len(list(active_dir.glob("*.md"))) if active_dir.exists() else 0
-    archived_count = len(list(archive_dir.glob("*.md"))) if archive_dir.exists() else 0
+def area_init(config: Config, project_name: str, area: str, area_type: str, title: str) -> dict[str, Any]:
+    scope = area_scope(area)
+    root = wiki_scope_dir(config, scope)
+    created_paths: list[str] = []
+    skipped_paths: list[str] = []
+
+    for directory in AREA_SUBDIRECTORIES:
+        path = ensure_within(config.vault_path, root / directory)
+        path.mkdir(parents=True, exist_ok=True)
+
+    files = {
+        "overview.md": (
+            title,
+            area_type,
+            f"Overview for {title}.",
+            "## Overview\n\nDocument the durable area overview here.",
+        ),
+        "index.md": (
+            f"{title} Index",
+            "Index",
+            f"Progressive-disclosure index for {title}.",
+            "\n".join(
+                [
+                    "## Core",
+                    "",
+                    "* [Overview](overview.md) - durable area overview",
+                    "* [Log](log.md) - chronological area activity",
+                    "",
+                    "## Sections",
+                    "",
+                    *[f"* [{directory}]({directory}/) - area notes" for directory in AREA_SUBDIRECTORIES],
+                ]
+            ),
+        ),
+        "log.md": (
+            f"{title} Log",
+            "Log",
+            f"Chronological activity log for {title}.",
+            f"## {datetime.now().astimezone().date().isoformat()}\n\n* **Initialization**: Created the area skeleton.",
+        ),
+    }
+
+    for filename, (file_title, doc_type, description, body) in files.items():
+        path = ensure_within(config.vault_path, root / filename)
+        if path.exists():
+            skipped_paths.append(str(path.relative_to(config.vault_path)))
+            continue
+        frontmatter = frontmatter_for_new_document(
+            config,
+            project_name,
+            scope,
+            file_title,
+            [slugify(title)],
+            doc_type,
+            description,
+            f"area/{slugify_path(scope.path)}/{path.stem}",
+        )
+        atomic_write(path, render_document(frontmatter, body))
+        refresh_index_entry(config, path)
+        created_paths.append(str(path.relative_to(config.vault_path)))
+
     return {
-        "project": project_name,
+        "area": scope.path,
+        "path": str(root.relative_to(config.vault_path)),
+        "created": created_paths,
+        "skipped": skipped_paths,
+        "directories": [str((root / directory).relative_to(config.vault_path)) for directory in AREA_SUBDIRECTORIES],
+    }
+
+
+def move_document(config: Config, source_arg: str, destination_arg: str, leave_stub: bool = False) -> dict[str, Any]:
+    source_path = resolve_doc_path(config, source_arg)
+    destination_path = resolve_doc_path(config, destination_arg)
+    if not source_path.exists():
+        raise WikiError(f"Document does not exist: {source_arg}")
+    if destination_path.exists():
+        raise WikiError(f"Move destination already exists: {destination_arg}")
+    root = wiki_root_dir(config)
+    ensure_within(root, source_path)
+    ensure_within(root, destination_path)
+    if ARCHIVE_DIRNAME in source_path.relative_to(root).parts or ARCHIVE_DIRNAME in destination_path.relative_to(root).parts:
+        raise WikiError("Move source and destination must be active wiki paths, not archive paths.")
+
+    doc = load_document(source_path, config.vault_path)
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, destination_path)
+    if leave_stub:
+        frontmatter = dict(doc.frontmatter)
+        frontmatter["updated"] = now_iso()
+        frontmatter["moved_to"] = str(destination_path.relative_to(config.vault_path))
+        stub_target = str(destination_path.relative_to(config.vault_path))
+        stub_body = f"# {doc.title}\n\nMoved to [{destination_path.name}]({stub_target}).\n"
+        atomic_write(source_path, render_existing_document(frontmatter, stub_body))
+    else:
+        source_path.unlink()
+        remove_empty_directory(source_path.parent, {wiki_root_dir(config), wiki_archive_dir(config)})
+    moved_doc = load_document(destination_path, config.vault_path)
+    moved_frontmatter = dict(moved_doc.frontmatter)
+    moved_frontmatter["updated"] = now_iso()
+    moved_frontmatter["moved_from"] = doc.relative_path
+    destination_wiki_relative = destination_path.relative_to(wiki_root_dir(config)).as_posix()
+    destination_parent = str(Path(destination_wiki_relative).parent)
+    existing_project = str(moved_frontmatter.get("project") or "")
+    if destination_parent and (not existing_project or not destination_wiki_relative.startswith(f"{existing_project}/")):
+        moved_frontmatter.pop("project", None)
+        moved_frontmatter["scope"] = "area"
+        moved_frontmatter["scope_path"] = destination_parent
+        existing_tags = [
+            tag
+            for tag in list(moved_frontmatter.get("tags") or [])
+            if not str(tag).startswith("project/") and not str(tag).startswith("area/")
+        ]
+        moved_frontmatter["tags"] = normalize_scope_tags(config, "", area_scope(destination_parent), existing_tags)
+    atomic_write(destination_path, render_existing_document(moved_frontmatter, moved_doc.body))
+    refresh_index_entry(config, source_path)
+    refresh_index_entry(config, destination_path)
+    return {
+        "path": str(destination_path.relative_to(config.vault_path)),
+        "original_path": doc.relative_path,
+        "title": doc.title,
+        "stub_left": leave_stub,
+    }
+
+
+def archive_status(config: Config, project_name: str, scope: Scope | None = None) -> dict[str, Any]:
+    active_scope = scope or project_scope(project_name)
+    active_dir = wiki_scope_dir(config, active_scope)
+    archive_dir = wiki_archive_scope_dir(config, active_scope)
+    active_count = len(list(active_dir.rglob("*.md"))) if active_dir.exists() else 0
+    archived_count = len(list(archive_dir.rglob("*.md"))) if archive_dir.exists() else 0
+    return {
+        "scope": active_scope.kind,
+        "scope_path": active_scope.path,
+        "project": project_name if active_scope.kind == "project" else None,
         "active_documents": active_count,
         "archived_documents": archived_count,
         "archive_path": str(archive_dir.relative_to(config.vault_path)),
@@ -1018,8 +1525,12 @@ def index_status(config: Config) -> dict[str, Any]:
 
 
 def doctor_report(config: Config, project_root: Path, project_name: str) -> dict[str, Any]:
+    return doctor_report_for_scope(config, project_root, project_name, project_scope(project_name))
+
+
+def doctor_report_for_scope(config: Config, project_root: Path, project_name: str, scope: Scope) -> dict[str, Any]:
     root = wiki_root_dir(config)
-    project_dir = wiki_project_dir(config, project_name)
+    scope_dir = wiki_scope_dir(config, scope)
     config_sources = [str(path) for path in project_config_paths(project_root) if path.exists()]
     if SKILL_CONFIG_PATH.exists():
         config_sources.append(str(SKILL_CONFIG_PATH))
@@ -1029,23 +1540,31 @@ def doctor_report(config: Config, project_root: Path, project_name: str) -> dict
     return {
         "project_root": str(project_root),
         "project": project_name,
+        "scope": scope.kind,
+        "scope_path": scope.path,
         "config_sources": config_sources,
         "vault_path": str(config.vault_path),
         "wiki_dir": config.wiki_dir,
         "wiki_root": str(root),
-        "project_wiki_dir": str(project_dir),
-        "project_wiki_exists": project_dir.exists(),
+        "scope_wiki_dir": str(scope_dir),
+        "scope_wiki_exists": scope_dir.exists(),
         "index": index_status(config),
         "writes_possible": root.exists() or os.access(config.vault_path, os.W_OK),
     }
 
 
+def add_area_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--area", default=argparse.SUPPRESS, help="Target an explicit wiki area path under the wiki root.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage persistent Obsidian wiki documents for the active project.")
     parser.add_argument("--project", help="Override the auto-detected project name.")
+    parser.add_argument("--area", help="Target an explicit wiki area path under the wiki root.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     scan_parser = subparsers.add_parser("scan", help="List wiki documents for the active project.")
+    add_area_argument(scan_parser)
     scan_parser.add_argument("--query", help="Optional keywords to filter by indexed title, tags, filename, headings, and excerpt.")
     scan_parser.add_argument("--limit", type=int, default=MAX_SCAN_RESULTS, help=f"Maximum results to return. Default: {MAX_SCAN_RESULTS}.")
     scan_parser.add_argument("--include-snippet", action="store_true", help="Include short indexed snippets in scan results.")
@@ -1055,12 +1574,17 @@ def build_parser() -> argparse.ArgumentParser:
     read_parser.add_argument("--path", required=True, help="Wiki document path relative to the vault root.")
 
     create_parser = subparsers.add_parser("create", help="Create a new wiki document.")
+    add_area_argument(create_parser)
     create_parser.add_argument("--title", required=True, help="Document title.")
+    create_parser.add_argument("--type", dest="doc_type", help="OKF-compatible document type. Default: Note.")
+    create_parser.add_argument("--description", help="Short document description. Defaults to the title.")
+    create_parser.add_argument("--id", dest="document_id", help="Stable document id. Defaults to a scope/title-derived id.")
     create_parser.add_argument("--content", help="Inline markdown content.")
     create_parser.add_argument("--content-file", help="Path to a markdown file containing the body content.")
     create_parser.add_argument("--tag", action="append", dest="tags", help="Additional tag to add.")
 
     update_parser = subparsers.add_parser("update", help="Append to, replace a section in, or rewrite a document.")
+    add_area_argument(update_parser)
     update_parser.add_argument("--path", required=True, help="Wiki document path relative to the vault root.")
     update_parser.add_argument("--mode", required=True, choices=["append", "replace", "rewrite"], help="Update mode.")
     update_parser.add_argument("--section", help="Section heading to replace when using replace mode.")
@@ -1068,9 +1592,33 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("--content-file", help="Path to a markdown file containing the new content.")
 
     frontmatter_parser = subparsers.add_parser("add-frontmatter", help="Add generated frontmatter to an existing plain Markdown note.")
+    add_area_argument(frontmatter_parser)
     frontmatter_parser.add_argument("--path", required=True, help="Wiki document path relative to the vault root.")
     frontmatter_parser.add_argument("--title", help="Title to store in frontmatter. Defaults to the filename title.")
+    frontmatter_parser.add_argument("--type", dest="doc_type", help="OKF-compatible document type. Default: Note.")
+    frontmatter_parser.add_argument("--description", help="Short document description. Defaults to the title.")
+    frontmatter_parser.add_argument("--id", dest="document_id", help="Stable document id. Defaults to a scope/title-derived id.")
     frontmatter_parser.add_argument("--tag", action="append", dest="tags", help="Additional tag to add.")
+
+    move_parser = subparsers.add_parser("move", help="Move one wiki note to another active wiki path for later curation workflows.")
+    move_parser.add_argument("--from", dest="source", required=True, help="Source wiki document path relative to the vault root.")
+    move_parser.add_argument("--to", dest="destination", required=True, help="Destination wiki document path relative to the vault root.")
+    move_parser.add_argument("--leave-stub", action="store_true", help="Leave a short moved-note stub at the old path.")
+
+    backup_parser = subparsers.add_parser("backup", help="Create and inspect wiki backups.")
+    backup_subparsers = backup_parser.add_subparsers(dest="backup_command", required=True)
+    backup_create_parser = backup_subparsers.add_parser("create", help="Create a backup of the configured wiki directory.")
+    backup_create_parser.add_argument("--label", help="Human label included in the backup id and manifest.")
+    backup_subparsers.add_parser("list", help="List available wiki backups.")
+    backup_inspect_parser = backup_subparsers.add_parser("inspect", help="Inspect one backup manifest.")
+    backup_inspect_parser.add_argument("--id", required=True, help="Backup id returned by backup create or backup list.")
+
+    area_parser = subparsers.add_parser("area", help="Initialize explicit cross-repository wiki areas.")
+    area_subparsers = area_parser.add_subparsers(dest="area_command", required=True)
+    area_init_parser = area_subparsers.add_parser("init", help="Create a safe area skeleton without overwriting existing files.")
+    area_init_parser.add_argument("--area", required=True, help="Area path under the wiki root.")
+    area_init_parser.add_argument("--type", dest="area_type", default="Area", help="Overview document type. Default: Area.")
+    area_init_parser.add_argument("--title", required=True, help="Human area title.")
 
     index_parser = subparsers.add_parser("index", help="Manage the lightweight wiki search index.")
     index_subparsers = index_parser.add_subparsers(dest="index_command", required=True)
@@ -1080,6 +1628,7 @@ def build_parser() -> argparse.ArgumentParser:
     archive_parser = subparsers.add_parser("archive", help="Archive, restore, and inspect old wiki notes.")
     archive_subparsers = archive_parser.add_subparsers(dest="archive_command", required=True)
     archive_candidates_parser = archive_subparsers.add_parser("candidates", help="List explicit archive candidates without changing files.")
+    add_area_argument(archive_candidates_parser)
     archive_candidates_parser.add_argument("--older-than-days", type=int, default=90, help="Minimum note age by updated timestamp. Default: 90.")
     archive_candidates_parser.add_argument("--limit", type=int, default=MAX_SCAN_RESULTS, help=f"Maximum candidates to return. Default: {MAX_SCAN_RESULTS}.")
     archive_candidates_parser.add_argument("--force", action="store_true", help="Include durable notes such as project overviews, architecture notes, runbooks, and glossary entries.")
@@ -1090,10 +1639,13 @@ def build_parser() -> argparse.ArgumentParser:
     archive_restore_parser = archive_subparsers.add_parser("restore", help="Restore one archived wiki note to its original path.")
     archive_restore_parser.add_argument("--path", required=True, help="Archived wiki document path relative to the vault root.")
     archive_cleanup_parser = archive_subparsers.add_parser("cleanup", help="Remove empty active and archived wiki folders.")
+    add_area_argument(archive_cleanup_parser)
     archive_cleanup_parser.add_argument("--global", dest="global_scope", action="store_true", help="Remove empty folders across all wiki project folders.")
-    archive_subparsers.add_parser("status", help="Show active and archived note counts for the project.")
+    archive_status_parser = archive_subparsers.add_parser("status", help="Show active and archived note counts for the project or area.")
+    add_area_argument(archive_status_parser)
 
-    subparsers.add_parser("doctor", help="Show resolved project, configuration, vault, and index diagnostics.")
+    doctor_parser = subparsers.add_parser("doctor", help="Show resolved project, configuration, vault, and index diagnostics.")
+    add_area_argument(doctor_parser)
 
     return parser
 
@@ -1106,10 +1658,16 @@ def main() -> int:
         project_root = discover_project_root()
         config = resolve_config(project_root)
         project_name = args.project or detect_project_name(project_root)
+        area_arg = getattr(args, "area", None)
+        if args.project and area_arg:
+            raise WikiError("--project and --area cannot be used together.")
+        scope = resolve_scope(project_name, area_arg)
 
         if args.command == "scan":
             payload = {
                 "project": project_name,
+                "scope": scope.kind,
+                "scope_path": scope.path,
                 "documents": scan_documents(
                     config,
                     project_name,
@@ -1117,6 +1675,7 @@ def main() -> int:
                     args.limit,
                     args.include_snippet,
                     args.include_archived,
+                    scope,
                 ),
             }
             print(json.dumps(payload, indent=2))
@@ -1128,20 +1687,75 @@ def main() -> int:
 
         if args.command == "create":
             content = read_content_arg(args.content, args.content_file)
-            payload = create_document(config, project_name, args.title, content, args.tags)
+            payload = create_document(
+                config,
+                project_name,
+                args.title,
+                content,
+                args.tags,
+                scope,
+                args.doc_type,
+                args.description,
+                args.document_id,
+            )
             print(json.dumps(payload, indent=2))
             return 0
 
         if args.command == "update":
             content = read_content_arg(args.content, args.content_file)
-            payload = update_document(config, project_name, args.path, args.mode, content, args.section)
+            payload = update_document(config, project_name, args.path, args.mode, content, args.section, scope)
             print(json.dumps(payload, indent=2))
             return 0
 
         if args.command == "add-frontmatter":
-            payload = add_frontmatter_to_document(config, project_name, args.path, args.title, args.tags)
+            payload = add_frontmatter_to_document(
+                config,
+                project_name,
+                args.path,
+                args.title,
+                args.tags,
+                scope,
+                args.doc_type,
+                args.description,
+                args.document_id,
+            )
             print(json.dumps(payload, indent=2))
             return 0
+
+        if args.command == "move":
+            payload = move_document(config, args.source, args.destination, args.leave_stub)
+            print(json.dumps(payload, indent=2))
+            return 0
+
+        if args.command == "backup":
+            if args.backup_command == "create":
+                payload = create_backup(config, args.label)
+                print(
+                    json.dumps(
+                        {
+                            "id": payload["id"],
+                            "label": payload["label"],
+                            "created": payload["created"],
+                            "backup_path": payload["backup_path"],
+                            "file_count": payload["file_count"],
+                            "byte_count": payload["byte_count"],
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+            if args.backup_command == "list":
+                print(json.dumps({"backups": list_backups(config)}, indent=2))
+                return 0
+            if args.backup_command == "inspect":
+                print(json.dumps(inspect_backup(config, args.id), indent=2))
+                return 0
+
+        if args.command == "area":
+            if args.area_command == "init":
+                payload = area_init(config, project_name, args.area, args.area_type, args.title)
+                print(json.dumps(payload, indent=2))
+                return 0
 
         if args.command == "index":
             if args.index_command == "rebuild":
@@ -1166,11 +1780,12 @@ def main() -> int:
                 candidates = (
                     archive_candidates_global(config, args.older_than_days, args.limit, args.force)
                     if args.global_scope
-                    else archive_candidates(config, project_name, args.older_than_days, args.limit, args.force)
+                    else archive_candidates(config, project_name, args.older_than_days, args.limit, args.force, scope)
                 )
                 payload = {
-                    "scope": "global" if args.global_scope else "project",
-                    "project": None if args.global_scope else project_name,
+                    "scope": "global" if args.global_scope else scope.kind,
+                    "scope_path": None if args.global_scope else scope.path,
+                    "project": None if args.global_scope or scope.kind != "project" else project_name,
                     "candidates": candidates,
                 }
                 print(json.dumps(payload, indent=2))
@@ -1182,14 +1797,14 @@ def main() -> int:
                 print(json.dumps(restore_document(config, args.path), indent=2))
                 return 0
             if args.archive_command == "cleanup":
-                print(json.dumps(cleanup_empty_directories(config, project_name, args.global_scope), indent=2))
+                print(json.dumps(cleanup_empty_directories(config, project_name, args.global_scope, scope), indent=2))
                 return 0
             if args.archive_command == "status":
-                print(json.dumps(archive_status(config, project_name), indent=2))
+                print(json.dumps(archive_status(config, project_name, scope), indent=2))
                 return 0
 
         if args.command == "doctor":
-            print(json.dumps(doctor_report(config, project_root, project_name), indent=2))
+            print(json.dumps(doctor_report_for_scope(config, project_root, project_name, scope), indent=2))
             return 0
 
         raise WikiError(f"Unknown command: {args.command}")

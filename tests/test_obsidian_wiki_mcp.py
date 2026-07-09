@@ -84,6 +84,31 @@ class McpWrapperTest(McpWikiTestCase):
         self.assertEqual(scanned["documents"][0]["title"], "Authentication Flow")
         self.assertIn("Token handling details.", body)
 
+    def test_create_and_scan_area_note(self) -> None:
+        created = obsidian_wiki_mcp.create_note(
+            "Story Map",
+            "Body",
+            ["story-map"],
+            type="Epic",
+            description="Story map for the epic.",
+            id="epic/ai-agent-templates/story-map",
+            area="Epics/AI Agent Templates",
+            project_root=str(self.project_root),
+        )
+
+        scanned = obsidian_wiki_mcp.scan_wiki(
+            query="Story",
+            area="Epics/AI Agent Templates",
+            project_root=str(self.project_root),
+        )
+        body = obsidian_wiki_mcp.read_note(created["path"], project_root=str(self.project_root))
+
+        self.assertEqual(created["path"], "Wiki/Epics/AI Agent Templates/story-map.md")
+        self.assertEqual(scanned["scope"], "area")
+        self.assertEqual(scanned["scope_path"], "Epics/AI Agent Templates")
+        self.assertEqual(scanned["documents"][0]["path"], created["path"])
+        self.assertIn("type: Epic", body)
+
     def test_update_note_redacts_and_refreshes_existing_index(self) -> None:
         created = obsidian_wiki_mcp.create_note(
             "Existing Ticket",
@@ -153,6 +178,34 @@ class McpWrapperTest(McpWikiTestCase):
                 project="demo",
                 project_root=str(self.project_root),
             )
+
+    def test_backup_and_doctor_wrappers(self) -> None:
+        obsidian_wiki_mcp.create_note(
+            "Backed Up",
+            "Body",
+            project="demo",
+            project_root=str(self.project_root),
+        )
+
+        backup = obsidian_wiki_mcp.backup_create("mcp", project_root=str(self.project_root))
+        backups = obsidian_wiki_mcp.backup_list(project_root=str(self.project_root))
+        inspected = obsidian_wiki_mcp.backup_inspect(backup["id"], project_root=str(self.project_root))
+        area_doctor = obsidian_wiki_mcp.doctor(area="Epics/AI Agent Templates", project_root=str(self.project_root))
+
+        self.assertEqual(backups["backups"][0]["id"], backup["id"])
+        self.assertEqual(inspected["id"], backup["id"])
+        self.assertEqual(area_doctor["scope"], "area")
+        self.assertEqual(area_doctor["scope_path"], "Epics/AI Agent Templates")
+
+    def test_area_init_wrapper_creates_skeleton(self) -> None:
+        result = obsidian_wiki_mcp.area_init(
+            "Epics/AI Agent Templates",
+            "AI Agent Templates",
+            "Epic",
+            project_root=str(self.project_root),
+        )
+
+        self.assertIn("Wiki/Epics/AI Agent Templates/index.md", result["created"])
 
 
 if __name__ == "__main__":

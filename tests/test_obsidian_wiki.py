@@ -618,5 +618,134 @@ class AddFrontmatterTest(WikiTestCase):
             )
 
 
+class BackupTest(WikiTestCase):
+    def test_backup_create_list_and_inspect_manifest(self) -> None:
+        result = obsidian_wiki.create_document(self.config, "demo", "Backed Up", "Body", ["ticket"])
+        obsidian_wiki.rebuild_index(self.config)
+
+        manifest = obsidian_wiki.create_backup(self.config, "pre okf")
+        listed = obsidian_wiki.list_backups(self.config)
+        inspected = obsidian_wiki.inspect_backup(self.config, manifest["id"])
+
+        self.assertEqual(manifest["label"], "pre okf")
+        self.assertEqual(listed[0]["id"], manifest["id"])
+        self.assertEqual(inspected["id"], manifest["id"])
+        self.assertTrue((Path(manifest["backup_path"]) / result["path"]).exists())
+        paths = {file["path"] for file in manifest["files"]}
+        self.assertIn(result["path"], paths)
+        self.assertIn("Wiki/.obsidian-wiki-index.json", paths)
+
+    def test_backup_manifest_contains_checksums_and_excludes_backup_dir(self) -> None:
+        result = obsidian_wiki.create_document(self.config, "demo", "Backed Up", "Body", ["ticket"])
+
+        manifest = obsidian_wiki.create_backup(self.config, "checksum")
+
+        entry = next(file for file in manifest["files"] if file["path"] == result["path"])
+        self.assertEqual(entry["sha256"], obsidian_wiki.file_sha256(self.vault_path / result["path"]))
+        self.assertFalse(any(obsidian_wiki.BACKUP_DIRNAME in file["path"] for file in manifest["files"]))
+
+
+class ScopeAndAreaTest(WikiTestCase):
+    def test_area_path_validation_rejects_unsafe_paths(self) -> None:
+        for area in ["", "../Other", "/absolute", "_archive/old", ".obsidian-wiki-backups/x"]:
+            with self.subTest(area=area):
+                with self.assertRaises(obsidian_wiki.WikiError):
+                    obsidian_wiki.area_scope(area)
+
+    def test_area_create_writes_okf_compatible_frontmatter(self) -> None:
+        scope = obsidian_wiki.area_scope("Epics/AI Agent Templates")
+
+        result = obsidian_wiki.create_document(
+            self.config,
+            "demo",
+            "Story Map",
+            "Body",
+            ["story-map"],
+            scope,
+            "Epic",
+            "Story map for the epic.",
+            "epic/ai-agent-templates/story-map",
+        )
+
+        self.assertEqual(result["path"], "Wiki/Epics/AI Agent Templates/story-map.md")
+        frontmatter, body = obsidian_wiki.parse_frontmatter((self.vault_path / result["path"]).read_text())
+        self.assertEqual(frontmatter["type"], "Epic")
+        self.assertEqual(frontmatter["description"], "Story map for the epic.")
+        self.assertEqual(frontmatter["id"], "epic/ai-agent-templates/story-map")
+        self.assertEqual(frontmatter["scope"], "area")
+        self.assertEqual(frontmatter["scope_path"], "Epics/AI Agent Templates")
+        self.assertNotIn("project", frontmatter)
+        self.assertIn("area/epics/ai-agent-templates", frontmatter["tags"])
+        self.assertIn("# Story Map", body)
+
+    def test_area_scan_uses_nested_paths_with_and_without_index(self) -> None:
+        area = obsidian_wiki.area_scope("Epics/AI Agent Templates")
+        obsidian_wiki.create_document(self.config, "demo", "Story Map", "Body", ["story-map"], area)
+        project_result = obsidian_wiki.create_document(self.config, "demo", "Story Map", "Project body", ["ticket"])
+
+        area_results = obsidian_wiki.scan_documents(self.config, "demo", "Story", scope=area)
+        project_results = obsidian_wiki.scan_documents(self.config, "demo", "Story")
+        obsidian_wiki.rebuild_index(self.config)
+        indexed_area_results = obsidian_wiki.scan_documents(self.config, "demo", "Story", scope=area)
+
+        self.assertEqual([result["path"] for result in area_results], ["Wiki/Epics/AI Agent Templates/story-map.md"])
+        self.assertEqual([result["path"] for result in project_results], [project_result["path"]])
+        self.assertEqual([result["path"] for result in indexed_area_results], ["Wiki/Epics/AI Agent Templates/story-map.md"])
+
+    def test_recursive_index_status_tracks_nested_area_notes(self) -> None:
+        area = obsidian_wiki.area_scope("Epics/AI Agent Templates")
+        result = obsidian_wiki.create_document(self.config, "demo", "Story Map", "Body", ["story-map"], area)
+        nested_path = self.vault_path / "Wiki" / "Epics" / "AI Agent Templates" / "stories" / "backend-2292.md"
+        nested_path.parent.mkdir(parents=True)
+        nested_path.write_text((self.vault_path / result["path"]).read_text().replace("Story Map", "Backend 2292"))
+
+        payload = obsidian_wiki.rebuild_index(self.config)
+        status = obsidian_wiki.index_status(self.config)
+
+        self.assertEqual(len(payload["documents"]), 2)
+        self.assertFalse(status["stale"])
+        self.assertEqual(status["documents"], 2)
+
+    def test_archive_area_note_mirrors_nested_path_and_restores(self) -> None:
+        area = obsidian_wiki.area_scope("Epics/AI Agent Templates")
+        result = obsidian_wiki.create_document(self.config, "demo", "Story Map", "Body", ["story-map"], area)
+        obsidian_wiki.rebuild_index(self.config)
+
+        archived = obsidian_wiki.archive_document(self.config, result["path"], "old")
+        restored = obsidian_wiki.restore_document(self.config, archived["path"])
+
+        self.assertEqual(archived["path"], "Wiki/_archive/Epics/AI Agent Templates/story-map.md")
+        self.assertEqual(restored["path"], result["path"])
+        self.assertTrue((self.vault_path / result["path"]).exists())
+
+    def test_area_init_creates_skeleton_without_overwriting(self) -> None:
+        result = obsidian_wiki.area_init(self.config, "demo", "Epics/AI Agent Templates", "Epic", "AI Agent Templates")
+        second = obsidian_wiki.area_init(self.config, "demo", "Epics/AI Agent Templates", "Epic", "AI Agent Templates")
+
+        self.assertIn("Wiki/Epics/AI Agent Templates/overview.md", result["created"])
+        self.assertIn("Wiki/Epics/AI Agent Templates/index.md", second["skipped"])
+        for directory in obsidian_wiki.AREA_SUBDIRECTORIES:
+            self.assertTrue((self.vault_path / "Wiki" / "Epics" / "AI Agent Templates" / directory).is_dir())
+
+    def test_move_document_moves_note_and_refreshes_index(self) -> None:
+        result = obsidian_wiki.create_document(self.config, "demo", "Movable", "Body", ["ticket"])
+        destination = "Wiki/Epics/AI Agent Templates/movable.md"
+        obsidian_wiki.rebuild_index(self.config)
+
+        moved = obsidian_wiki.move_document(self.config, result["path"], destination)
+        scan_results = obsidian_wiki.scan_documents(self.config, "demo", "Movable", scope=obsidian_wiki.area_scope("Epics/AI Agent Templates"))
+        project_results = obsidian_wiki.scan_documents(self.config, "demo", "Movable")
+        frontmatter, _ = obsidian_wiki.parse_frontmatter((self.vault_path / destination).read_text())
+
+        self.assertEqual(moved["path"], destination)
+        self.assertFalse((self.vault_path / result["path"]).exists())
+        self.assertTrue((self.vault_path / destination).exists())
+        self.assertEqual(scan_results[0]["path"], destination)
+        self.assertEqual(project_results, [])
+        self.assertEqual(frontmatter["scope"], "area")
+        self.assertEqual(frontmatter["scope_path"], "Epics/AI Agent Templates")
+        self.assertNotIn("project", frontmatter)
+
+
 if __name__ == "__main__":
     unittest.main()

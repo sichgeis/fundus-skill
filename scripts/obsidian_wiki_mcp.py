@@ -20,14 +20,22 @@ class WikiContext:
     project_root: Path
     config: wiki.Config
     project_name: str
+    scope: wiki.Scope
 
 
-def resolve_context(project: str | None = None, project_root: str | None = None) -> WikiContext:
+def resolve_context(project: str | None = None, project_root: str | None = None, area: str | None = None) -> WikiContext:
+    if project and area:
+        raise wiki.WikiError("project and area cannot both be provided.")
     start = Path(project_root).expanduser().resolve() if project_root else Path.cwd()
     resolved_root = wiki.discover_project_root(start)
     config = wiki.resolve_config(resolved_root)
     project_name = project or wiki.detect_project_name(resolved_root)
-    return WikiContext(project_root=resolved_root, config=config, project_name=project_name)
+    return WikiContext(
+        project_root=resolved_root,
+        config=config,
+        project_name=project_name,
+        scope=wiki.resolve_scope(project_name, area),
+    )
 
 
 def scan_wiki(
@@ -37,10 +45,13 @@ def scan_wiki(
     include_archived: bool = False,
     project: str | None = None,
     project_root: str | None = None,
+    area: str | None = None,
 ) -> dict[str, Any]:
-    context = resolve_context(project, project_root)
+    context = resolve_context(project, project_root, area)
     return {
         "project": context.project_name,
+        "scope": context.scope.kind,
+        "scope_path": context.scope.path,
         "documents": wiki.scan_documents(
             context.config,
             context.project_name,
@@ -48,6 +59,7 @@ def scan_wiki(
             limit,
             include_snippet,
             include_archived,
+            context.scope,
         ),
     }
 
@@ -61,11 +73,15 @@ def create_note(
     title: str,
     content: str,
     tags: list[str] | None = None,
+    type: str | None = None,
+    description: str | None = None,
+    id: str | None = None,
     project: str | None = None,
     project_root: str | None = None,
+    area: str | None = None,
 ) -> dict[str, Any]:
-    context = resolve_context(project, project_root)
-    return wiki.create_document(context.config, context.project_name, title, content, tags)
+    context = resolve_context(project, project_root, area)
+    return wiki.create_document(context.config, context.project_name, title, content, tags, context.scope, type, description, id)
 
 
 def update_note(
@@ -75,20 +91,60 @@ def update_note(
     section: str | None = None,
     project: str | None = None,
     project_root: str | None = None,
+    area: str | None = None,
 ) -> dict[str, Any]:
-    context = resolve_context(project, project_root)
-    return wiki.update_document(context.config, context.project_name, path, mode, content, section)
+    context = resolve_context(project, project_root, area)
+    return wiki.update_document(context.config, context.project_name, path, mode, content, section, context.scope)
 
 
 def add_frontmatter(
     path: str,
     title: str | None = None,
     tags: list[str] | None = None,
+    type: str | None = None,
+    description: str | None = None,
+    id: str | None = None,
     project: str | None = None,
     project_root: str | None = None,
+    area: str | None = None,
 ) -> dict[str, Any]:
+    context = resolve_context(project, project_root, area)
+    return wiki.add_frontmatter_to_document(
+        context.config,
+        context.project_name,
+        path,
+        title,
+        tags,
+        context.scope,
+        type,
+        description,
+        id,
+    )
+
+
+def move_note(path: str, destination: str, leave_stub: bool = False, project_root: str | None = None) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return wiki.move_document(context.config, path, destination, leave_stub)
+
+
+def backup_create(label: str | None = None, project_root: str | None = None) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return wiki.create_backup(context.config, label)
+
+
+def backup_list(project_root: str | None = None) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return {"backups": wiki.list_backups(context.config)}
+
+
+def backup_inspect(id: str, project_root: str | None = None) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return wiki.inspect_backup(context.config, id)
+
+
+def area_init(area: str, title: str, type: str = "Area", project: str | None = None, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project, project_root)
-    return wiki.add_frontmatter_to_document(context.config, context.project_name, path, title, tags)
+    return wiki.area_init(context.config, context.project_name, area, type, title)
 
 
 def index_status(project_root: str | None = None) -> dict[str, Any]:
@@ -113,16 +169,18 @@ def archive_candidates(
     global_scope: bool = False,
     project: str | None = None,
     project_root: str | None = None,
+    area: str | None = None,
 ) -> dict[str, Any]:
-    context = resolve_context(project, project_root)
+    context = resolve_context(project, project_root, area)
     candidates = (
         wiki.archive_candidates_global(context.config, older_than_days, limit, force)
         if global_scope
-        else wiki.archive_candidates(context.config, context.project_name, older_than_days, limit, force)
+        else wiki.archive_candidates(context.config, context.project_name, older_than_days, limit, force, context.scope)
     )
     return {
-        "scope": "global" if global_scope else "project",
-        "project": None if global_scope else context.project_name,
+        "scope": "global" if global_scope else context.scope.kind,
+        "scope_path": None if global_scope else context.scope.path,
+        "project": None if global_scope or context.scope.kind != "project" else context.project_name,
         "candidates": candidates,
     }
 
@@ -141,19 +199,20 @@ def archive_cleanup(
     global_scope: bool = False,
     project: str | None = None,
     project_root: str | None = None,
+    area: str | None = None,
 ) -> dict[str, Any]:
-    context = resolve_context(project, project_root)
-    return wiki.cleanup_empty_directories(context.config, context.project_name, global_scope)
+    context = resolve_context(project, project_root, area)
+    return wiki.cleanup_empty_directories(context.config, context.project_name, global_scope, context.scope)
 
 
-def archive_status(project: str | None = None, project_root: str | None = None) -> dict[str, Any]:
-    context = resolve_context(project, project_root)
-    return wiki.archive_status(context.config, context.project_name)
+def archive_status(project: str | None = None, project_root: str | None = None, area: str | None = None) -> dict[str, Any]:
+    context = resolve_context(project, project_root, area)
+    return wiki.archive_status(context.config, context.project_name, context.scope)
 
 
-def doctor(project: str | None = None, project_root: str | None = None) -> dict[str, Any]:
-    context = resolve_context(project, project_root)
-    return wiki.doctor_report(context.config, context.project_root, context.project_name)
+def doctor(project: str | None = None, project_root: str | None = None, area: str | None = None) -> dict[str, Any]:
+    context = resolve_context(project, project_root, area)
+    return wiki.doctor_report_for_scope(context.config, context.project_root, context.project_name, context.scope)
 
 
 def build_server() -> Any:
@@ -168,6 +227,11 @@ def build_server() -> Any:
     server.tool()(create_note)
     server.tool()(update_note)
     server.tool()(add_frontmatter)
+    server.tool()(move_note)
+    server.tool()(backup_create)
+    server.tool()(backup_list)
+    server.tool()(backup_inspect)
+    server.tool()(area_init)
     server.tool()(index_status)
     server.tool()(index_rebuild)
     server.tool()(archive_candidates)

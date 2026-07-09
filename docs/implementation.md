@@ -2,19 +2,23 @@
 
 ## Behavior
 
-The skill writes long-lived repository knowledge into an Obsidian vault under:
+The skill writes long-lived repository knowledge and cross-repository area knowledge into an Obsidian vault under:
 
 ```text
 {vault_path}/{wiki_dir}/{project-name}/
+{vault_path}/{wiki_dir}/{area-path}/
 ```
 
 The script supports:
 
-- `scan`: list Markdown documents for the active project, optionally filtered by query terms.
+- `scan`: list Markdown documents for the active project or selected area, optionally filtered by query terms.
 - `read`: print a vault-relative or absolute document path.
-- `create`: create a new Markdown document with frontmatter, title heading, tags, and redacted content.
+- `create`: create a new Markdown document with OKF-compatible frontmatter, title heading, tags, and redacted content.
 - `update`: append content, replace a named heading section, or rewrite the full article body.
-- `index rebuild`: build a lightweight search index for all project wiki Markdown documents.
+- `move`: move one active wiki document for later curation workflows.
+- `backup create/list/inspect`: create and inspect snapshots of the configured wiki before curation.
+- `area init`: create an explicit area skeleton without overwriting existing files.
+- `index rebuild`: build a lightweight search index for all project and area wiki Markdown documents.
 - `index status`: report whether the index exists and has the expected document count.
 - `archive candidates`: list old active notes that may be safe to archive.
 - `archive apply`: move one explicit active note into the archive.
@@ -23,8 +27,14 @@ The script supports:
 - `doctor`: print resolved project, configuration, vault, wiki, and index diagnostics.
 
 All writes go through `scripts/obsidian_wiki.py`; agents should not edit wiki documents directly.
-Create removes a duplicate leading H1 from supplied content when it matches the generated document title, so notes keep a single top-level title heading.
+Create removes a duplicate leading H1 from supplied content when it matches the generated document title, so notes keep a single top-level title heading. New notes include local OKF-compatible fields such as `type`, `description`, `id`, `scope`, `scope_path`, and `timestamp`; old project notes remain supported.
 Use `update --mode rewrite` when a note is outdated enough that append or section replacement would preserve misleading stale content.
+
+## Scopes
+
+Project scope is the default and targets `Wiki/{project-name}/`. Area scope is explicit and targets paths such as `Wiki/Epics/AI Agent Templates/` or `Wiki/Domains/Invoicing/`.
+
+`--project` and `--area` are mutually exclusive. Area paths are relative to the wiki root, may contain nested directories and spaces, and cannot use reserved directories or escape the wiki root.
 
 ## Search Index
 
@@ -34,7 +44,7 @@ The optional search index is stored at:
 {vault_path}/{wiki_dir}/.obsidian-wiki-index.json
 ```
 
-Each entry stores compact metadata: vault-relative path, project, title, tags, updated timestamp, headings, a short excerpt, normalized lexical tokens, and ticket IDs such as `BACKEND-2242`. `scan --query` uses the index when present and falls back to direct project-folder Markdown scanning when absent.
+Each entry stores compact metadata: vault-relative path, project, scope, scope path, title, tags, updated timestamp, headings, a short excerpt, normalized lexical tokens, and ticket IDs such as `BACKEND-2242`. `scan --query` uses the index when present and falls back to direct scope-folder Markdown scanning when absent.
 
 Successful `create` and `update` operations refresh only the affected index entry when an index already exists. They do not create the index implicitly; use `index rebuild` to opt into indexed search.
 
@@ -43,14 +53,24 @@ Successful `create` and `update` operations refresh only the affected index entr
 Archived notes are stored under:
 
 ```text
-{vault_path}/{wiki_dir}/_archive/{project-name}/
+{vault_path}/{wiki_dir}/_archive/...
 ```
 
-`archive apply` moves the file, preserves its body, and adds frontmatter fields: `archived`, `archived_at`, `archived_reason`, and `original_path`. If the active project directory becomes empty after the move, it is removed. `archive restore` uses `original_path`, recreates the original project directory as needed, fails if the destination already exists, and removes the archive project directory when it becomes empty.
+`archive apply` mirrors the active path under `_archive`, preserves the body, and adds frontmatter fields: `archived`, `archived_at`, `archived_reason`, and `original_path`. Project notes still archive to `_archive/{project-name}/`; area notes preserve their nested area path. `archive restore` uses `original_path`, recreates the original directory as needed, fails if the destination already exists, and removes the archive directory when it becomes empty.
 
 Normal `scan` excludes archived notes. `scan --include-archived` returns archived entries with archive metadata. The index includes active and archived notes so archive and restore keep search state fresh without requiring a full rebuild.
 
-`archive candidates` is intentionally read-only. It scans the detected project by default; passing `--global` scans every active project folder under the wiki root and includes the project name in each candidate. It uses the note `updated` timestamp and excludes durable tags such as `project-overview`, `architecture`, `runbook`, and `glossary` by default. Passing `--force` includes those durable notes and marks them as `old_durable_note`, so explicit force requests can still surface every age-matching note before `archive apply` moves selected paths.
+`archive candidates` is intentionally read-only. It scans the detected project by default or an explicit `--area`; passing `--global` scans every active project folder under the wiki root and includes the project name in each candidate. It uses the note `updated` timestamp and excludes durable tags such as `project-overview`, `architecture`, `runbook`, and `glossary` by default. Passing `--force` includes those durable notes and marks them as `old_durable_note`, so explicit force requests can still surface every age-matching note before `archive apply` moves selected paths.
+
+## Backup
+
+Backups are stored outside the indexed wiki tree:
+
+```text
+{vault_path}/.obsidian-wiki-backups/{backup-id}/
+```
+
+`backup create --label ...` copies the configured `Wiki/` directory into the backup folder and writes `manifest.json` with timestamp, file count, byte count, and SHA-256 checksums. `backup list` returns compact manifest summaries. `backup inspect --id ...` returns the full manifest.
 
 ## Agent Package
 
@@ -66,7 +86,7 @@ The skill instructions avoid agent-specific paths. Agents should resolve the scr
 
 `scripts/obsidian_wiki_mcp.py` is a stdio MCP server built with the Python MCP SDK. It is an additional runtime surface over the same domain functions as `scripts/obsidian_wiki.py`; it does not implement a separate write path.
 
-The server exposes typed tools for scan, read, create, update, add-frontmatter, index status/rebuild, archive candidates/apply/restore/cleanup/status, and doctor diagnostics. Each tool resolves the active project root, configuration, and project name before calling the existing helper functions. Optional `project_root` and `project` arguments let MCP clients override those values when their server process cwd is not the repository being documented.
+The server exposes typed tools for scan, read, create, update, add-frontmatter, move, backup create/list/inspect, area init, index status/rebuild, archive candidates/apply/restore/cleanup/status, and doctor diagnostics. Each tool resolves the active project root, configuration, project name, and optional area scope before calling the existing helper functions. Optional `project_root`, `project`, and `area` arguments let MCP clients override those values when their server process cwd is not the repository being documented.
 
 Codex and other MCP clients normally launch the server command as a child process:
 

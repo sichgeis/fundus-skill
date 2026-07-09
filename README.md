@@ -2,11 +2,11 @@
 
 This repository is the source of truth for the local `obsidian-wiki` Agent Skill.
 
-The skill persists codebase knowledge into an Obsidian vault as per-repository wiki documents. The same skill package can be installed for Codex, Claude Code, and ForgeCode.
+The skill persists codebase knowledge into an Obsidian vault as per-repository wiki documents and explicit cross-repository areas. The same skill package can be installed for Codex, Claude Code, and ForgeCode.
 
 Existing wiki documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
 Created documents keep one generated top-level title heading; duplicate matching H1 headings in supplied content are removed automatically.
-Search is backed by a lightweight JSON index at `{vault_path}/{wiki_dir}/.obsidian-wiki-index.json` when present, so agents can find likely matching notes from titles, tags, filenames, headings, ticket IDs, and short excerpts without reading every note body. Old notes can be archived reversibly under `{vault_path}/{wiki_dir}/_archive/{project}/`.
+Search is backed by a lightweight JSON index at `{vault_path}/{wiki_dir}/.obsidian-wiki-index.json` when present, so agents can find likely matching notes from titles, tags, filenames, headings, ticket IDs, and short excerpts without reading every note body. Old notes can be archived reversibly under `{vault_path}/{wiki_dir}/_archive/...`, with nested area paths mirrored under the archive root.
 
 ## Layout
 
@@ -101,7 +101,47 @@ Example Codex MCP configuration:
 }
 ```
 
-The MCP server exposes typed tools for scanning, reading, creating, updating, indexing, archiving, restoring, cleaning up, and diagnosing wiki notes. It uses the same configuration precedence, path confinement, redaction, atomic writes, index refresh behavior, and archive behavior as `scripts/obsidian_wiki.py`.
+The MCP server exposes typed tools for scanning, reading, creating, updating, moving, backing up, area initialization, indexing, archiving, restoring, cleaning up, and diagnosing wiki notes. It uses the same configuration precedence, path confinement, redaction, atomic writes, index refresh behavior, and archive behavior as `scripts/obsidian_wiki.py`.
+
+## Project And Area Scopes
+
+The default scope is still the detected project:
+
+```bash
+python dist/obsidian-wiki/scripts/obsidian_wiki.py scan --query "authentication"
+python dist/obsidian-wiki/scripts/obsidian_wiki.py create --title "Authentication Flow" --content-file /tmp/note.md
+```
+
+Use `--area` for cross-repository knowledge such as epics, domains, capabilities, interviews, decisions, and story maps:
+
+```bash
+python dist/obsidian-wiki/scripts/obsidian_wiki.py scan --area "Epics/AI Agent Templates" --query "lineage"
+python dist/obsidian-wiki/scripts/obsidian_wiki.py create --area "Epics/AI Agent Templates" --title "Story Map" --type Epic --content-file /tmp/story-map.md
+```
+
+`--project` and `--area` are mutually exclusive. Area paths are always relative to `{vault_path}/{wiki_dir}` and cannot target reserved directories or escape the wiki root.
+
+New notes get OKF-compatible frontmatter (`type`, `title`, `description`, `id`, `scope`, `scope_path`, `timestamp`, `created`, `updated`, and `tags`) while legacy project notes remain readable and updateable.
+
+Initialize an area skeleton only when explicitly starting a new area:
+
+```bash
+python dist/obsidian-wiki/scripts/obsidian_wiki.py area init --area "Epics/AI Agent Templates" --type Epic --title "AI Agent Templates"
+```
+
+This creates `index.md`, `log.md`, `overview.md`, and standard subfolders without overwriting existing files.
+
+## Backup
+
+Create a restorable snapshot before migration or bulk curation:
+
+```bash
+python dist/obsidian-wiki/scripts/obsidian_wiki.py backup create --label pre-okf-curation
+python dist/obsidian-wiki/scripts/obsidian_wiki.py backup list
+python dist/obsidian-wiki/scripts/obsidian_wiki.py backup inspect --id 20260709T103010+0200-pre-okf-option-b
+```
+
+Backups are stored under `{vault_path}/.obsidian-wiki-backups/`, outside the indexed `Wiki/` tree. Each backup includes a manifest with file counts, byte counts, and SHA-256 checksums.
 
 ## Codex Permissions
 
@@ -219,7 +259,7 @@ python dist/obsidian-wiki/scripts/obsidian_wiki.py archive cleanup
 python dist/obsidian-wiki/scripts/obsidian_wiki.py archive cleanup --global
 ```
 
-Archived notes move to `Wiki/_archive/{project}/`, keep their content, and get archive metadata in frontmatter. Empty active project folders are removed after archive, and restore recreates the original folder while cleaning up empty archive project folders. `archive cleanup` removes leftover empty active and archived project folders without moving notes. Normal `scan` excludes archived notes; use `scan --include-archived` to find them explicitly.
+Archived notes move under `Wiki/_archive/...`, keep their content, and get archive metadata in frontmatter. Project notes still archive under `Wiki/_archive/{project}/`; area notes mirror their active nested path, for example `Wiki/Epics/AI Agent Templates/story-map.md` archives to `Wiki/_archive/Epics/AI Agent Templates/story-map.md`. `archive cleanup` removes leftover empty active and archived folders without moving notes. Normal `scan` excludes archived notes; use `scan --include-archived` to find them explicitly.
 
 ## Verify
 

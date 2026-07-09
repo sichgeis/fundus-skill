@@ -1,19 +1,19 @@
-# Obsidian Wiki Skill
+# Fundus Skill
 
-This repository is the source of truth for the local `obsidian-wiki` Agent Skill.
+This repository is the source of truth for the local `fundus` Agent Skill.
 
-The skill persists codebase knowledge into an Obsidian vault as per-repository wiki documents and explicit cross-repository areas. The same skill package can be installed for Codex, Claude Code, and ForgeCode.
+The skill persists codebase knowledge into an Obsidian vault as per-repository Fundus documents and explicit cross-repository areas. The same skill package can be installed for Codex, Claude Code, and ForgeCode.
 
-Existing wiki documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
+Existing Fundus documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
 Created documents keep one generated top-level title heading; duplicate matching H1 headings in supplied content are removed automatically.
-Search is backed by a lightweight JSON index at `{vault_path}/{wiki_dir}/.obsidian-wiki-index.json` when present, so agents can find likely matching notes from titles, tags, filenames, headings, ticket IDs, and short excerpts without reading every note body. Old notes can be archived reversibly under `{vault_path}/{wiki_dir}/_archive/...`, with nested area paths mirrored under the archive root.
+Search is backed by a lightweight JSON index at `{vault_path}/{fundus_dir}/.fundus-index.json` when present, so agents can find likely matching notes from titles, tags, filenames, headings, ticket IDs, and short excerpts without reading every note body. Old notes can be archived reversibly under `{vault_path}/{fundus_dir}/_archive/...`, with nested area paths mirrored under the archive root.
 
 ## Layout
 
 - `SKILL.md`: agent-agnostic skill manifest and operating instructions.
 - `commands/`: slash-command wrappers that invoke the skill from supported agents.
-- `scripts/obsidian_wiki.py`: deterministic scan/read/create/update/index/archive/doctor tool for wiki documents.
-- `scripts/obsidian_wiki_mcp.py`: stdio MCP server exposing the same wiki operations as typed tools.
+- `scripts/fundus.py`: deterministic scan/read/create/update/index/archive/doctor tool for Fundus documents.
+- `scripts/fundus_mcp.py`: stdio MCP server exposing the same Fundus operations as typed tools.
 - `config.json`: local default configuration used by the installed skill.
 - `config.example.json`: portable configuration template.
 - `requirements.txt`: Python runtime dependency list for the MCP server.
@@ -31,7 +31,7 @@ task build
 The build task creates:
 
 ```text
-dist/obsidian-wiki
+dist/fundus
 ```
 
 Only runtime files are copied into the package.
@@ -55,9 +55,9 @@ task install:forge
 The install targets copy the same built package into:
 
 ```text
-~/.codex/skills/obsidian-wiki
-~/.claude/skills/obsidian-wiki
-~/.forge/skills/obsidian-wiki
+~/.codex/skills/fundus
+~/.claude/skills/fundus
+~/.forge/skills/fundus
 ```
 
 They also install the `document` command into each agent's command location:
@@ -77,13 +77,13 @@ Restart the target agent after installing or changing the skill so the skill man
 The package also includes a local stdio MCP server. MCP clients such as Codex launch this command as a child process and keep it alive while the client session is using the server:
 
 ```bash
-python /path/to/obsidian-wiki/scripts/obsidian_wiki_mcp.py
+python /path/to/fundus/scripts/fundus_mcp.py
 ```
 
 Install the Python MCP SDK in the environment that will run the server:
 
 ```bash
-pip install -r /path/to/obsidian-wiki/requirements.txt
+pip install -r /path/to/fundus/requirements.txt
 ```
 
 Example Codex MCP configuration:
@@ -91,42 +91,42 @@ Example Codex MCP configuration:
 ```json
 {
   "mcpServers": {
-    "obsidian-wiki": {
+    "fundus": {
       "command": "python",
       "args": [
-        "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki_mcp.py"
+        "/Users/christian/.codex/skills/fundus/scripts/fundus_mcp.py"
       ]
     }
   }
 }
 ```
 
-The MCP server exposes typed tools for scanning, reading, creating, updating, moving, backing up, area initialization, indexing, archiving, restoring, cleaning up, and diagnosing wiki notes. It uses the same configuration precedence, path confinement, redaction, atomic writes, index refresh behavior, and archive behavior as `scripts/obsidian_wiki.py`.
+The MCP server exposes typed tools for scanning, reading, creating, updating, moving, backing up, area initialization, indexing, archiving, restoring, cleaning up, and diagnosing Fundus notes. It uses the same configuration precedence, path confinement, redaction, atomic writes, index refresh behavior, and archive behavior as `scripts/fundus.py`.
 
 ## Project And Area Scopes
 
 The default scope is still the detected project:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py scan --query "authentication"
-python dist/obsidian-wiki/scripts/obsidian_wiki.py create --title "Authentication Flow" --content-file /tmp/note.md
+python dist/fundus/scripts/fundus.py scan --query "authentication"
+python dist/fundus/scripts/fundus.py create --title "Authentication Flow" --content-file /tmp/note.md
 ```
 
 Use `--area` for cross-repository knowledge such as epics, domains, capabilities, interviews, decisions, and story maps:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py scan --area "Epics/AI Agent Templates" --query "lineage"
-python dist/obsidian-wiki/scripts/obsidian_wiki.py create --area "Epics/AI Agent Templates" --title "Story Map" --type Epic --content-file /tmp/story-map.md
+python dist/fundus/scripts/fundus.py scan --area "Epics/AI Agent Templates" --query "lineage"
+python dist/fundus/scripts/fundus.py create --area "Epics/AI Agent Templates" --title "Story Map" --type Epic --content-file /tmp/story-map.md
 ```
 
-`--project` and `--area` are mutually exclusive. Area paths are always relative to `{vault_path}/{wiki_dir}` and cannot target reserved directories or escape the wiki root.
+`--project` and `--area` are mutually exclusive. Area paths are always relative to `{vault_path}/{fundus_dir}` and cannot target reserved directories or escape the Fundus root.
 
 New notes get OKF-compatible frontmatter (`type`, `title`, `description`, `id`, `scope`, `scope_path`, `timestamp`, `created`, `updated`, and `tags`) while legacy project notes remain readable and updateable.
 
 Initialize an area skeleton only when explicitly starting a new area:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py area init --area "Epics/AI Agent Templates" --type Epic --title "AI Agent Templates"
+python dist/fundus/scripts/fundus.py area init --area "Epics/AI Agent Templates" --type Epic --title "AI Agent Templates"
 ```
 
 This creates `index.md`, `log.md`, `overview.md`, and standard subfolders without overwriting existing files.
@@ -136,23 +136,23 @@ This creates `index.md`, `log.md`, `overview.md`, and standard subfolders withou
 Normalize legacy note metadata without changing note bodies:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter --path "Wiki/my-project/old-note.md"
+python dist/fundus/scripts/fundus.py normalize-frontmatter --path "Fundus/my-project/old-note.md"
 ```
 
 The command is a dry-run by default. It reports planned changes, body hashes, and whether the body would remain unchanged. Add `--apply` to write:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter \
-  --path "Wiki/my-project/old-note.md" \
+python dist/fundus/scripts/fundus.py normalize-frontmatter \
+  --path "Fundus/my-project/old-note.md" \
   --apply
 ```
 
-For curation batches, normalize a selected scope or all active wiki notes:
+For curation batches, normalize a selected scope or all active Fundus notes:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py --area "Epics/AI Agent Templates" normalize-frontmatter
-python dist/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter --global --limit 20
-python dist/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter --global --apply
+python dist/fundus/scripts/fundus.py --area "Epics/AI Agent Templates" normalize-frontmatter
+python dist/fundus/scripts/fundus.py normalize-frontmatter --global --limit 20
+python dist/fundus/scripts/fundus.py normalize-frontmatter --global --apply
 ```
 
 Use `--include-archived` only when archived notes should be normalized too. Use `--add-missing` only when plain Markdown notes should receive generated OKF frontmatter; otherwise missing-frontmatter files are reported and skipped.
@@ -164,19 +164,19 @@ Normalization infers project and area scope from the note path, not from the cur
 Create a restorable snapshot before migration or bulk curation:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py backup create --label pre-okf-curation
-python dist/obsidian-wiki/scripts/obsidian_wiki.py backup list
-python dist/obsidian-wiki/scripts/obsidian_wiki.py backup inspect --id 20260709T103010+0200-pre-okf-option-b
+python dist/fundus/scripts/fundus.py backup create --label pre-okf-curation
+python dist/fundus/scripts/fundus.py backup list
+python dist/fundus/scripts/fundus.py backup inspect --id 20260709T103010+0200-pre-okf-option-b
 ```
 
-Backups are stored under `{vault_path}/.obsidian-wiki-backups/`, outside the indexed `Wiki/` tree. Each backup includes a manifest with file counts, byte counts, and SHA-256 checksums.
+Backups are stored under `{vault_path}/.fundus-backups/`, outside the indexed `Fundus/` tree. Each backup includes a manifest with file counts, byte counts, and SHA-256 checksums.
 
 ## Codex Permissions
 
 For fast documentation runs in Codex, approve the installed helper prefix that matches the Python command Codex will actually run:
 
 ```text
-python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py
+python /Users/christian/.codex/skills/fundus/scripts/fundus.py
 ```
 
 Use `python3` instead of `python` only when that is the command available in the agent environment.
@@ -186,9 +186,9 @@ Codex has two separate gates:
 - Command approval: whether the proposed command is trusted.
 - Filesystem sandboxing: whether the command may write outside the active workspace.
 
-Codex approvals are command-prefix based, not skill-name based. The interpreter token is part of that prefix: a rule for `python .../obsidian_wiki.py` does not match `python3 .../obsidian_wiki.py`. There is no separate "allow this whole skill" switch in `SKILL.md`; permission belongs in Codex's sandbox, approval policy, and rules configuration. Because the default vault is `/Users/christian/vault/Hypatos`, normal wiki writes usually happen outside repository workspaces. In `workspace-write` sessions, agents should run write-like helper commands as the exact installed Python command with escalated sandbox permissions.
+Codex approvals are command-prefix based, not skill-name based. The interpreter token is part of that prefix: a rule for `python .../fundus.py` does not match `python3 .../fundus.py`. There is no separate "allow this whole skill" switch in `SKILL.md`; permission belongs in Codex's sandbox, approval policy, and rules configuration. Because the default vault is `/Users/christian/vault/Hypatos`, normal Fundus writes usually happen outside repository workspaces. In `workspace-write` sessions, agents should run write-like helper commands as the exact installed Python command with escalated sandbox permissions.
 
-Once the helper prefix is already allowlisted, routine wiki writes should not propose a fresh `prefix_rule`. If the Codex tool API still requires a `justification` for `sandbox_permissions=require_escalated`, keep that wording terse and operational rather than presenting it as another durable approval request. Only suggest the durable rule when the prefix is missing, the command is denied, or the command shape does not match the existing rule.
+Once the helper prefix is already allowlisted, routine Fundus writes should not propose a fresh `prefix_rule`. If the Codex tool API still requires a `justification` for `sandbox_permissions=require_escalated`, keep that wording terse and operational rather than presenting it as another durable approval request. Only suggest the durable rule when the prefix is missing, the command is denied, or the command shape does not match the existing rule.
 
 To make the permission durable, add a Codex rule in `~/.codex/rules/default.rules` and restart Codex:
 
@@ -196,34 +196,34 @@ You can also ask the coding agent to add or update this allow rule for you. The 
 
 ```starlark
 prefix_rule(
-    pattern=["python", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"],
+    pattern=["python", "/Users/christian/.codex/skills/fundus/scripts/fundus.py"],
     decision="allow",
-    justification="Allow the vetted Obsidian wiki helper without repeated prompts",
+    justification="Allow the vetted Fundus helper without repeated prompts",
 )
 ```
 
-Use the same shape with `pattern=["python3", "/Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py"]` if `python3` is the command the agent will actually run.
+Use the same shape with `pattern=["python3", "/Users/christian/.codex/skills/fundus/scripts/fundus.py"]` if `python3` is the command the agent will actually run.
 
 This trusts invocations of that helper script through the matching prefix; it is not a fine-grained audit of every file write or subprocess inside Python. Keep the helper small, deterministic, and path-constrained.
 
-This rule covers the installed wiki helper only. It does not cover repository maintenance commands such as `task install`, `task install:codex`, or direct edits under `~/.codex`; those are separate filesystem writes outside the active workspace and may still require their own approval or durable rule. Do not run install tasks during normal wiki documentation. Install only after changing the skill source and when the installed agent copy actually needs to be refreshed.
+This rule covers the installed Fundus helper only. It does not cover repository maintenance commands such as `task install`, `task install:codex`, or direct edits under `~/.codex`; those are separate filesystem writes outside the active workspace and may still require their own approval or durable rule. Do not run install tasks during normal Fundus documentation. Install only after changing the skill source and when the installed agent copy actually needs to be refreshed.
 
 For Codex, keep the helper invocation itself simple so the prefix rule can match it. Read-only helper calls such as `scan`, `read`, `doctor`, `index status`, and `archive candidates` do not need escalated sandbox permissions. Use inline `--content` only for short, simple, single-line content. For multiline or quote-heavy Markdown, write the body to a temporary file in a sandbox-writable location such as `/private/tmp`, then call the helper with `--content-file`:
 
 ```bash
-python /Users/christian/.codex/skills/obsidian-wiki/scripts/obsidian_wiki.py update \
-  --path "Wiki/my-project/authentication-flow.md" \
+python /Users/christian/.codex/skills/fundus/scripts/fundus.py update \
+  --path "Fundus/my-project/authentication-flow.md" \
   --mode replace \
   --section "Session Handling" \
-  --content-file /private/tmp/wiki-update.md
+  --content-file /private/tmp/fundus-update.md
 ```
 
-Avoid wrapping wiki writes in shell-heavy commands such as here-docs, `$'...'` strings, command substitutions, redirections, or long `/bin/zsh -lc ...` payloads. Those forms can fall outside Codex's conservative command-prefix matching even though the underlying Python script is allowlisted. If Codex is launched with `--add-dir /Users/christian/vault/Hypatos`, the vault is part of the writable sandbox and write commands may not need escalation; otherwise the exact allowlisted helper command should be escalated for writes.
+Avoid wrapping Fundus writes in shell-heavy commands such as here-docs, `$'...'` strings, command substitutions, redirections, or long `/bin/zsh -lc ...` payloads. Those forms can fall outside Codex's conservative command-prefix matching even though the underlying Python script is allowlisted. If Codex is launched with `--add-dir /Users/christian/vault/Hypatos`, the vault is part of the writable sandbox and write commands may not need escalation; otherwise the exact allowlisted helper command should be escalated for writes.
 
 Good allowlisted write shape:
 
 ```text
-sandbox_permissions=require_escalated + exact installed helper command + --content-file /private/tmp/wiki-update.md + no prefix_rule
+sandbox_permissions=require_escalated + exact installed helper command + --content-file /private/tmp/fundus-update.md + no prefix_rule
 ```
 
 Avoid for already-allowlisted helpers:
@@ -234,17 +234,17 @@ sandbox_permissions=require_escalated + shell wrapper or inline multiline conten
 
 ## Search Index
 
-Build or refresh the wiki search index with:
+Build or refresh the Fundus search index with:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py index rebuild
+python dist/fundus/scripts/fundus.py index rebuild
 ```
 
 Check index freshness and resolved paths with:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py index status
-python dist/obsidian-wiki/scripts/obsidian_wiki.py doctor
+python dist/fundus/scripts/fundus.py index status
+python dist/fundus/scripts/fundus.py doctor
 ```
 
 `scan --query` uses the index when it exists and falls back to direct Markdown scanning when it does not. Successful `create` and `update` operations refresh their affected index entry automatically if an index already exists.
@@ -254,40 +254,40 @@ python dist/obsidian-wiki/scripts/obsidian_wiki.py doctor
 List old-note candidates without changing files:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py archive candidates --older-than-days 90
+python dist/fundus/scripts/fundus.py archive candidates --older-than-days 90
 ```
 
-Scan all active project wiki folders instead of only the detected project:
+Scan all active project Fundus folders instead of only the detected project:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py archive candidates --older-than-days 90 --global
+python dist/fundus/scripts/fundus.py archive candidates --older-than-days 90 --global
 ```
 
 Durable notes such as project overviews, architecture notes, runbooks, and glossary entries are excluded from normal candidates. Include them only for explicit force requests:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py archive candidates --older-than-days 90 --force
+python dist/fundus/scripts/fundus.py archive candidates --older-than-days 90 --force
 ```
 
 Archive and restore explicit paths:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py archive apply \
-  --path "Wiki/my-project/old-ticket.md" \
+python dist/fundus/scripts/fundus.py archive apply \
+  --path "Fundus/my-project/old-ticket.md" \
   --reason "superseded by current runbook"
 
-python dist/obsidian-wiki/scripts/obsidian_wiki.py archive restore \
-  --path "Wiki/_archive/my-project/old-ticket.md"
+python dist/fundus/scripts/fundus.py archive restore \
+  --path "Fundus/_archive/my-project/old-ticket.md"
 ```
 
-Remove leftover empty folders for the detected project, or across all wiki project folders:
+Remove leftover empty folders for the detected project, or across all Fundus project folders:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py archive cleanup
-python dist/obsidian-wiki/scripts/obsidian_wiki.py archive cleanup --global
+python dist/fundus/scripts/fundus.py archive cleanup
+python dist/fundus/scripts/fundus.py archive cleanup --global
 ```
 
-Archived notes move under `Wiki/_archive/...`, keep their content, and get archive metadata in frontmatter. Project notes still archive under `Wiki/_archive/{project}/`; area notes mirror their active nested path, for example `Wiki/Epics/AI Agent Templates/story-map.md` archives to `Wiki/_archive/Epics/AI Agent Templates/story-map.md`. `archive cleanup` removes leftover empty active and archived folders without moving notes. Normal `scan` excludes archived notes; use `scan --include-archived` to find them explicitly.
+Archived notes move under `Fundus/_archive/...`, keep their content, and get archive metadata in frontmatter. Project notes still archive under `Fundus/_archive/{project}/`; area notes mirror their active nested path, for example `Fundus/Epics/AI Agent Templates/story-map.md` archives to `Fundus/_archive/Epics/AI Agent Templates/story-map.md`. `archive cleanup` removes leftover empty active and archived folders without moving notes. Normal `scan` excludes archived notes; use `scan --include-archived` to find them explicitly.
 
 ## Verify
 
@@ -310,8 +310,8 @@ task verify:forge
 You can also run the built or installed script directly:
 
 ```bash
-python dist/obsidian-wiki/scripts/obsidian_wiki.py --help
-python dist/obsidian-wiki/scripts/obsidian_wiki_mcp.py --help
+python dist/fundus/scripts/fundus.py --help
+python dist/fundus/scripts/fundus_mcp.py --help
 ```
 
 ## Configuration
@@ -319,15 +319,13 @@ python dist/obsidian-wiki/scripts/obsidian_wiki_mcp.py --help
 Configuration resolves in this order:
 
 1. `OBSIDIAN_VAULT_PATH`
-2. project-local `.agents/obsidian-wiki.json`
-3. project-local `.codex/obsidian-wiki.json` for backward compatibility
-4. project-local `.claude/obsidian-wiki.json` for backward compatibility
-5. installed skill-local `config.json`
+2. project-local `.agents/fundus.json`
+3. installed skill-local `config.json`
 
 Default configuration targets:
 
 ```text
-/Users/christian/vault/Hypatos/Wiki
+/Users/christian/vault/Hypatos/Fundus
 ```
 
 ## Update Workflow

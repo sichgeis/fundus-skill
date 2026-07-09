@@ -9,39 +9,39 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = ROOT / "scripts" / "obsidian_wiki.py"
-SPEC = importlib.util.spec_from_file_location("obsidian_wiki", SCRIPT_PATH)
+SCRIPT_PATH = ROOT / "scripts" / "fundus.py"
+SPEC = importlib.util.spec_from_file_location("fundus", SCRIPT_PATH)
 assert SPEC and SPEC.loader
-obsidian_wiki = importlib.util.module_from_spec(SPEC)
-sys.modules["obsidian_wiki"] = obsidian_wiki
-SPEC.loader.exec_module(obsidian_wiki)
+fundus = importlib.util.module_from_spec(SPEC)
+sys.modules["fundus"] = fundus
+SPEC.loader.exec_module(fundus)
 
 
-class WikiTestCase(unittest.TestCase):
+class FundusTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.vault_path = Path(self.temp_dir.name).resolve()
-        self.config = obsidian_wiki.Config(
+        self.config = fundus.Config(
             vault_path=self.vault_path,
-            wiki_dir="Wiki",
-            default_tags=["wiki"],
+            fundus_dir="Fundus",
+            default_tags=["fundus"],
             redaction_enabled=True,
             redaction_patterns=["API_KEY", "SECRET", "TOKEN", "PASSWORD"],
         )
-        self.path = self.vault_path / "Wiki" / "demo" / "article.md"
+        self.path = self.vault_path / "Fundus" / "demo" / "article.md"
         self.path.parent.mkdir(parents=True)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
     def read_document_body(self, path: Path) -> str:
-        _, body = obsidian_wiki.parse_frontmatter(path.read_text())
+        _, body = fundus.parse_frontmatter(path.read_text())
         return body.strip()
 
 
-class CreateDocumentTest(WikiTestCase):
+class CreateDocumentTest(FundusTestCase):
     def create_article(self, title: str, body: str) -> Path:
-        result = obsidian_wiki.create_document(self.config, "demo", title, body, None)
+        result = fundus.create_document(self.config, "demo", title, body, None)
         return self.vault_path / result["path"]
 
     def test_create_removes_duplicate_leading_title_heading(self) -> None:
@@ -73,40 +73,40 @@ class CreateDocumentTest(WikiTestCase):
         self.assertEqual(self.read_document_body(path), "# Authentication Flow\n\nDetails")
 
 
-class IndexSearchTest(WikiTestCase):
+class IndexSearchTest(FundusTestCase):
     def create_article(self, title: str, body: str, tags: list[str] | None = None) -> Path:
-        result = obsidian_wiki.create_document(self.config, "demo", title, body, tags)
+        result = fundus.create_document(self.config, "demo", title, body, tags)
         return self.vault_path / result["path"]
 
     def test_rebuild_index_includes_document_metadata_headings_and_excerpt(self) -> None:
         self.create_article(
-            "Allow Full Wiki Article Rewrite",
+            "Allow Full Fundus Article Rewrite",
             "## Refined Ticket\n\nAllow replacing the complete article body.",
             ["ticket"],
         )
 
-        payload = obsidian_wiki.rebuild_index(self.config)
+        payload = fundus.rebuild_index(self.config)
 
         self.assertEqual(len(payload["documents"]), 1)
         entry = payload["documents"][0]
-        self.assertEqual(entry["title"], "Allow Full Wiki Article Rewrite")
+        self.assertEqual(entry["title"], "Allow Full Fundus Article Rewrite")
         self.assertEqual(entry["project"], "demo")
         self.assertIn("Refined Ticket", entry["headings"])
         self.assertIn("article", entry["tokens"])
-        self.assertTrue((self.vault_path / "Wiki" / obsidian_wiki.INDEX_FILENAME).exists())
+        self.assertTrue((self.vault_path / "Fundus" / fundus.INDEX_FILENAME).exists())
 
     def test_scan_uses_index_for_body_and_heading_matches(self) -> None:
         self.create_article(
-            "Allow Full Wiki Article Rewrite",
+            "Allow Full Fundus Article Rewrite",
             "## Refined Ticket\n\nAllow replacing the complete article body.",
             ["ticket"],
         )
-        obsidian_wiki.rebuild_index(self.config)
+        fundus.rebuild_index(self.config)
 
-        results = obsidian_wiki.scan_documents(self.config, "demo", "article body replace")
+        results = fundus.scan_documents(self.config, "demo", "article body replace")
 
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["title"], "Allow Full Wiki Article Rewrite")
+        self.assertEqual(results[0]["title"], "Allow Full Fundus Article Rewrite")
         self.assertEqual(results[0]["reason"], "title,body")
 
     def test_scan_matches_ticket_id_from_body(self) -> None:
@@ -115,28 +115,28 @@ class IndexSearchTest(WikiTestCase):
             "## Context\n\nImplement BACKEND-2242 page-aware retry budgets.",
             ["ticket"],
         )
-        obsidian_wiki.rebuild_index(self.config)
+        fundus.rebuild_index(self.config)
 
-        results = obsidian_wiki.scan_documents(self.config, "demo", "backend-2242")
+        results = fundus.scan_documents(self.config, "demo", "backend-2242")
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["title"], "LLM OCR Fallback Ticket")
         self.assertIn("ticket:BACKEND-2242", results[0]["reason"])
 
     def test_create_refreshes_existing_index_entry(self) -> None:
-        obsidian_wiki.rebuild_index(self.config)
+        fundus.rebuild_index(self.config)
 
         self.create_article("New Ticket", "## Context\n\nFresh indexed content.", ["ticket"])
 
-        results = obsidian_wiki.scan_documents(self.config, "demo", "fresh indexed")
+        results = fundus.scan_documents(self.config, "demo", "fresh indexed")
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["title"], "New Ticket")
 
     def test_update_refreshes_existing_index_entry(self) -> None:
         path = self.create_article("Existing Ticket", "## Context\n\nOld content.", ["ticket"])
-        obsidian_wiki.rebuild_index(self.config)
+        fundus.rebuild_index(self.config)
 
-        obsidian_wiki.update_document(
+        fundus.update_document(
             self.config,
             "demo",
             str(path.relative_to(self.vault_path)),
@@ -145,15 +145,15 @@ class IndexSearchTest(WikiTestCase):
             None,
         )
 
-        results = obsidian_wiki.scan_documents(self.config, "demo", "searchable phrase")
+        results = fundus.scan_documents(self.config, "demo", "searchable phrase")
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["title"], "Existing Ticket")
 
     def test_index_status_reports_fresh_index(self) -> None:
         self.create_article("Existing Ticket", "Body", ["ticket"])
-        obsidian_wiki.rebuild_index(self.config)
+        fundus.rebuild_index(self.config)
 
-        status = obsidian_wiki.index_status(self.config)
+        status = fundus.index_status(self.config)
 
         self.assertTrue(status["exists"])
         self.assertTrue(status["valid"])
@@ -162,22 +162,22 @@ class IndexSearchTest(WikiTestCase):
 
     def test_index_status_reports_changed_document_as_stale(self) -> None:
         path = self.create_article("Existing Ticket", "Body", ["ticket"])
-        obsidian_wiki.rebuild_index(self.config)
+        fundus.rebuild_index(self.config)
         path.write_text(path.read_text() + "\nChanged outside the tool.\n")
 
-        status = obsidian_wiki.index_status(self.config)
+        status = fundus.index_status(self.config)
 
         self.assertTrue(status["stale"])
-        self.assertEqual(status["stale_paths"], ["Wiki/demo/existing-ticket.md"])
+        self.assertEqual(status["stale_paths"], ["Fundus/demo/existing-ticket.md"])
 
 
-class ArchiveDocumentTest(WikiTestCase):
+class ArchiveDocumentTest(FundusTestCase):
     def create_article(self, title: str, body: str, tags: list[str] | None = None) -> Path:
-        result = obsidian_wiki.create_document(self.config, "demo", title, body, tags)
+        result = fundus.create_document(self.config, "demo", title, body, tags)
         return self.vault_path / result["path"]
 
     def write_article_with_updated(self, title: str, updated: str, tags: list[str]) -> Path:
-        path = self.vault_path / "Wiki" / "demo" / f"{obsidian_wiki.slugify(title)}.md"
+        path = self.vault_path / "Fundus" / "demo" / f"{fundus.slugify(title)}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         tag_lines = "\n".join(f"  - {tag}" for tag in tags)
         path.write_text(
@@ -202,20 +202,20 @@ class ArchiveDocumentTest(WikiTestCase):
         return path
 
     def test_archive_candidates_excludes_durable_tags_by_default(self) -> None:
-        self.write_article_with_updated("Old Ticket", "2025-01-01T00:00:00+00:00", ["wiki", "project/demo", "ticket"])
-        self.write_article_with_updated("Architecture Overview", "2025-01-01T00:00:00+00:00", ["wiki", "project/demo", "architecture"])
+        self.write_article_with_updated("Old Ticket", "2025-01-01T00:00:00+00:00", ["fundus", "project/demo", "ticket"])
+        self.write_article_with_updated("Architecture Overview", "2025-01-01T00:00:00+00:00", ["fundus", "project/demo", "architecture"])
         self.create_article("Fresh Ticket", "Body", ["ticket"])
 
-        candidates = obsidian_wiki.archive_candidates(self.config, "demo", 90, 10)
+        candidates = fundus.archive_candidates(self.config, "demo", 90, 10)
 
         self.assertEqual([candidate["title"] for candidate in candidates], ["Old Ticket"])
         self.assertEqual(candidates[0]["reason"], "old_ticket_or_investigation")
 
     def test_archive_candidates_force_includes_durable_tags(self) -> None:
-        self.write_article_with_updated("Old Ticket", "2025-01-01T00:00:00+00:00", ["wiki", "project/demo", "ticket"])
-        self.write_article_with_updated("Architecture Overview", "2025-01-01T00:00:00+00:00", ["wiki", "project/demo", "architecture"])
+        self.write_article_with_updated("Old Ticket", "2025-01-01T00:00:00+00:00", ["fundus", "project/demo", "ticket"])
+        self.write_article_with_updated("Architecture Overview", "2025-01-01T00:00:00+00:00", ["fundus", "project/demo", "architecture"])
 
-        candidates = obsidian_wiki.archive_candidates(self.config, "demo", 90, 10, force=True)
+        candidates = fundus.archive_candidates(self.config, "demo", 90, 10, force=True)
         reasons_by_title = {candidate["title"]: candidate["reason"] for candidate in candidates}
 
         self.assertEqual(
@@ -227,8 +227,8 @@ class ArchiveDocumentTest(WikiTestCase):
         )
 
     def test_archive_candidates_global_lists_old_notes_across_projects(self) -> None:
-        self.write_article_with_updated("Demo Old Ticket", "2025-01-01T00:00:00+00:00", ["wiki", "project/demo", "ticket"])
-        other_project_path = self.vault_path / "Wiki" / "other" / "other-old-note.md"
+        self.write_article_with_updated("Demo Old Ticket", "2025-01-01T00:00:00+00:00", ["fundus", "project/demo", "ticket"])
+        other_project_path = self.vault_path / "Fundus" / "other" / "other-old-note.md"
         other_project_path.parent.mkdir(parents=True, exist_ok=True)
         other_project_path.write_text(
             "\n".join(
@@ -251,7 +251,7 @@ class ArchiveDocumentTest(WikiTestCase):
             )
         )
 
-        candidates = obsidian_wiki.archive_candidates_global(self.config, 90, 10)
+        candidates = fundus.archive_candidates_global(self.config, 90, 10)
 
         self.assertEqual(
             {candidate["title"]: candidate["project"] for candidate in candidates},
@@ -263,155 +263,155 @@ class ArchiveDocumentTest(WikiTestCase):
 
     def test_archive_apply_moves_note_and_marks_frontmatter(self) -> None:
         path = self.create_article("Old Ticket", "Body", ["ticket"])
-        obsidian_wiki.rebuild_index(self.config)
+        fundus.rebuild_index(self.config)
 
-        result = obsidian_wiki.archive_document(
+        result = fundus.archive_document(
             self.config,
             str(path.relative_to(self.vault_path)),
             "superseded",
         )
 
-        archive_path = self.vault_path / "Wiki" / "_archive" / "demo" / "old-ticket.md"
+        archive_path = self.vault_path / "Fundus" / "_archive" / "demo" / "old-ticket.md"
         self.assertFalse(path.exists())
         self.assertTrue(archive_path.exists())
-        self.assertEqual(result["path"], "Wiki/_archive/demo/old-ticket.md")
-        frontmatter, body = obsidian_wiki.parse_frontmatter(archive_path.read_text())
+        self.assertEqual(result["path"], "Fundus/_archive/demo/old-ticket.md")
+        frontmatter, body = fundus.parse_frontmatter(archive_path.read_text())
         self.assertEqual(frontmatter["archived"], "true")
         self.assertEqual(frontmatter["archived_reason"], "superseded")
-        self.assertEqual(frontmatter["original_path"], "Wiki/demo/old-ticket.md")
+        self.assertEqual(frontmatter["original_path"], "Fundus/demo/old-ticket.md")
         self.assertIn("Body", body)
 
     def test_archive_apply_removes_empty_active_project_directory(self) -> None:
         path = self.create_article("Old Ticket", "Body", ["ticket"])
 
-        result = obsidian_wiki.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
+        result = fundus.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
 
         self.assertTrue(result["active_directory_removed"])
-        self.assertFalse((self.vault_path / "Wiki" / "demo").exists())
+        self.assertFalse((self.vault_path / "Fundus" / "demo").exists())
 
     def test_archive_apply_keeps_active_project_directory_when_not_empty(self) -> None:
         path = self.create_article("Old Ticket", "Body", ["ticket"])
         self.create_article("Remaining Note", "Body", ["ticket"])
 
-        result = obsidian_wiki.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
+        result = fundus.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
 
         self.assertFalse(result["active_directory_removed"])
-        self.assertTrue((self.vault_path / "Wiki" / "demo").exists())
-        self.assertTrue((self.vault_path / "Wiki" / "demo" / "remaining-note.md").exists())
+        self.assertTrue((self.vault_path / "Fundus" / "demo").exists())
+        self.assertTrue((self.vault_path / "Fundus" / "demo" / "remaining-note.md").exists())
 
     def test_scan_excludes_archived_notes_by_default(self) -> None:
         path = self.create_article("Old Ticket", "Searchable archived body", ["ticket"])
-        obsidian_wiki.rebuild_index(self.config)
-        obsidian_wiki.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
+        fundus.rebuild_index(self.config)
+        fundus.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
 
-        active_results = obsidian_wiki.scan_documents(self.config, "demo", "searchable", include_archived=False)
-        archived_results = obsidian_wiki.scan_documents(self.config, "demo", "searchable", include_archived=True)
+        active_results = fundus.scan_documents(self.config, "demo", "searchable", include_archived=False)
+        archived_results = fundus.scan_documents(self.config, "demo", "searchable", include_archived=True)
 
         self.assertEqual(active_results, [])
         self.assertEqual(len(archived_results), 1)
         self.assertTrue(archived_results[0]["archived"])
-        self.assertEqual(archived_results[0]["path"], "Wiki/_archive/demo/old-ticket.md")
+        self.assertEqual(archived_results[0]["path"], "Fundus/_archive/demo/old-ticket.md")
 
     def test_restore_moves_archived_note_to_original_path(self) -> None:
         path = self.create_article("Old Ticket", "Body", ["ticket"])
-        obsidian_wiki.rebuild_index(self.config)
-        archive_result = obsidian_wiki.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
+        fundus.rebuild_index(self.config)
+        archive_result = fundus.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
 
-        restore_result = obsidian_wiki.restore_document(self.config, archive_result["path"])
+        restore_result = fundus.restore_document(self.config, archive_result["path"])
 
-        restored_path = self.vault_path / "Wiki" / "demo" / "old-ticket.md"
-        archive_path = self.vault_path / "Wiki" / "_archive" / "demo" / "old-ticket.md"
+        restored_path = self.vault_path / "Fundus" / "demo" / "old-ticket.md"
+        archive_path = self.vault_path / "Fundus" / "_archive" / "demo" / "old-ticket.md"
         self.assertTrue(restored_path.exists())
         self.assertFalse(archive_path.exists())
-        self.assertEqual(restore_result["path"], "Wiki/demo/old-ticket.md")
+        self.assertEqual(restore_result["path"], "Fundus/demo/old-ticket.md")
         self.assertTrue(restore_result["archive_directory_removed"])
-        self.assertTrue((self.vault_path / "Wiki" / "demo").exists())
-        self.assertFalse((self.vault_path / "Wiki" / "_archive" / "demo").exists())
-        self.assertTrue((self.vault_path / "Wiki" / "_archive").exists())
-        frontmatter, _ = obsidian_wiki.parse_frontmatter(restored_path.read_text())
+        self.assertTrue((self.vault_path / "Fundus" / "demo").exists())
+        self.assertFalse((self.vault_path / "Fundus" / "_archive" / "demo").exists())
+        self.assertTrue((self.vault_path / "Fundus" / "_archive").exists())
+        frontmatter, _ = fundus.parse_frontmatter(restored_path.read_text())
         self.assertNotIn("archived", frontmatter)
         self.assertNotIn("original_path", frontmatter)
 
     def test_restore_keeps_archive_project_directory_when_not_empty(self) -> None:
         first_path = self.create_article("First Ticket", "Body", ["ticket"])
         second_path = self.create_article("Second Ticket", "Body", ["ticket"])
-        first_archive = obsidian_wiki.archive_document(self.config, str(first_path.relative_to(self.vault_path)), "old")
-        obsidian_wiki.archive_document(self.config, str(second_path.relative_to(self.vault_path)), "old")
+        first_archive = fundus.archive_document(self.config, str(first_path.relative_to(self.vault_path)), "old")
+        fundus.archive_document(self.config, str(second_path.relative_to(self.vault_path)), "old")
 
-        result = obsidian_wiki.restore_document(self.config, first_archive["path"])
+        result = fundus.restore_document(self.config, first_archive["path"])
 
         self.assertFalse(result["archive_directory_removed"])
-        self.assertTrue((self.vault_path / "Wiki" / "demo").exists())
-        self.assertTrue((self.vault_path / "Wiki" / "_archive" / "demo").exists())
-        self.assertTrue((self.vault_path / "Wiki" / "_archive" / "demo" / "second-ticket.md").exists())
+        self.assertTrue((self.vault_path / "Fundus" / "demo").exists())
+        self.assertTrue((self.vault_path / "Fundus" / "_archive" / "demo").exists())
+        self.assertTrue((self.vault_path / "Fundus" / "_archive" / "demo" / "second-ticket.md").exists())
 
     def test_archive_cleanup_removes_empty_project_and_archive_directories(self) -> None:
-        active_empty = self.vault_path / "Wiki" / "demo" / "empty" / "nested"
-        archive_empty = self.vault_path / "Wiki" / "_archive" / "demo" / "empty"
+        active_empty = self.vault_path / "Fundus" / "demo" / "empty" / "nested"
+        archive_empty = self.vault_path / "Fundus" / "_archive" / "demo" / "empty"
         active_empty.mkdir(parents=True)
         archive_empty.mkdir(parents=True)
 
-        result = obsidian_wiki.cleanup_empty_directories(self.config, "demo")
+        result = fundus.cleanup_empty_directories(self.config, "demo")
 
         self.assertEqual(result["scope"], "project")
         self.assertEqual(result["project"], "demo")
         self.assertEqual(result["removed_count"], 5)
-        self.assertFalse((self.vault_path / "Wiki" / "demo").exists())
-        self.assertFalse((self.vault_path / "Wiki" / "_archive" / "demo").exists())
-        self.assertTrue((self.vault_path / "Wiki").exists())
-        self.assertTrue((self.vault_path / "Wiki" / "_archive").exists())
+        self.assertFalse((self.vault_path / "Fundus" / "demo").exists())
+        self.assertFalse((self.vault_path / "Fundus" / "_archive" / "demo").exists())
+        self.assertTrue((self.vault_path / "Fundus").exists())
+        self.assertTrue((self.vault_path / "Fundus" / "_archive").exists())
 
     def test_archive_cleanup_keeps_non_empty_directories(self) -> None:
         path = self.create_article("Remaining Note", "Body", ["ticket"])
-        empty_archive = self.vault_path / "Wiki" / "_archive" / "demo" / "empty"
+        empty_archive = self.vault_path / "Fundus" / "_archive" / "demo" / "empty"
         empty_archive.mkdir(parents=True)
 
-        result = obsidian_wiki.cleanup_empty_directories(self.config, "demo")
+        result = fundus.cleanup_empty_directories(self.config, "demo")
 
-        self.assertEqual(result["removed_directories"], ["Wiki/_archive/demo", "Wiki/_archive/demo/empty"])
+        self.assertEqual(result["removed_directories"], ["Fundus/_archive/demo", "Fundus/_archive/demo/empty"])
         self.assertTrue(path.exists())
-        self.assertTrue((self.vault_path / "Wiki" / "demo").exists())
+        self.assertTrue((self.vault_path / "Fundus" / "demo").exists())
 
     def test_archive_cleanup_global_removes_empty_directories_across_projects(self) -> None:
-        (self.vault_path / "Wiki" / "demo" / "empty").mkdir(parents=True)
-        (self.vault_path / "Wiki" / "other" / "empty").mkdir(parents=True)
-        kept_path = self.vault_path / "Wiki" / "kept" / "note.md"
+        (self.vault_path / "Fundus" / "demo" / "empty").mkdir(parents=True)
+        (self.vault_path / "Fundus" / "other" / "empty").mkdir(parents=True)
+        kept_path = self.vault_path / "Fundus" / "kept" / "note.md"
         kept_path.parent.mkdir(parents=True)
         kept_path.write_text("Body")
 
-        result = obsidian_wiki.cleanup_empty_directories(self.config, "demo", global_scope=True)
+        result = fundus.cleanup_empty_directories(self.config, "demo", global_scope=True)
 
         self.assertEqual(result["scope"], "global")
         self.assertIsNone(result["project"])
-        self.assertFalse((self.vault_path / "Wiki" / "demo").exists())
-        self.assertFalse((self.vault_path / "Wiki" / "other").exists())
+        self.assertFalse((self.vault_path / "Fundus" / "demo").exists())
+        self.assertFalse((self.vault_path / "Fundus" / "other").exists())
         self.assertTrue(kept_path.exists())
-        self.assertTrue((self.vault_path / "Wiki").exists())
+        self.assertTrue((self.vault_path / "Fundus").exists())
 
     def test_restore_fails_when_destination_exists(self) -> None:
         path = self.create_article("Old Ticket", "Body", ["ticket"])
-        archive_result = obsidian_wiki.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
+        archive_result = fundus.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
         self.create_article("Old Ticket", "Replacement", ["ticket"])
 
-        with self.assertRaisesRegex(obsidian_wiki.WikiError, "Restore destination already exists"):
-            obsidian_wiki.restore_document(self.config, archive_result["path"])
+        with self.assertRaisesRegex(fundus.FundusError, "Restore destination already exists"):
+            fundus.restore_document(self.config, archive_result["path"])
 
     def test_index_status_remains_fresh_after_archive_and_restore(self) -> None:
         path = self.create_article("Old Ticket", "Body", ["ticket"])
-        obsidian_wiki.rebuild_index(self.config)
-        archive_result = obsidian_wiki.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
+        fundus.rebuild_index(self.config)
+        archive_result = fundus.archive_document(self.config, str(path.relative_to(self.vault_path)), "old")
 
-        archived_status = obsidian_wiki.index_status(self.config)
+        archived_status = fundus.index_status(self.config)
         self.assertFalse(archived_status["stale"])
         self.assertEqual(archived_status["documents"], 1)
 
-        obsidian_wiki.restore_document(self.config, archive_result["path"])
-        restored_status = obsidian_wiki.index_status(self.config)
+        fundus.restore_document(self.config, archive_result["path"])
+        restored_status = fundus.index_status(self.config)
         self.assertFalse(restored_status["stale"])
         self.assertEqual(restored_status["documents"], 1)
 
 
-class UpdateDocumentTest(WikiTestCase):
+class UpdateDocumentTest(FundusTestCase):
     def write_article(self, body: str, frontmatter: str | None = None) -> None:
         metadata = frontmatter or "\n".join(
             [
@@ -421,7 +421,7 @@ class UpdateDocumentTest(WikiTestCase):
                 "updated: 2026-01-01T00:00:00+00:00",
                 "project: demo",
                 "tags:",
-                "  - wiki",
+                "  - fundus",
                 "  - project/demo",
                 "---",
             ]
@@ -432,16 +432,16 @@ class UpdateDocumentTest(WikiTestCase):
         return self.read_document_body(self.path)
 
     def read_frontmatter(self) -> dict[str, object]:
-        frontmatter, _ = obsidian_wiki.parse_frontmatter(self.path.read_text())
+        frontmatter, _ = fundus.parse_frontmatter(self.path.read_text())
         return frontmatter
 
     def test_append_mode_adds_content_to_existing_body(self) -> None:
         self.write_article("# Article\n\nExisting")
 
-        obsidian_wiki.update_document(
+        fundus.update_document(
             self.config,
             "demo",
-            "Wiki/demo/article.md",
+            "Fundus/demo/article.md",
             "append",
             "## New Findings\n\nMore detail",
             None,
@@ -452,10 +452,10 @@ class UpdateDocumentTest(WikiTestCase):
     def test_replace_mode_replaces_named_section(self) -> None:
         self.write_article("# Article\n\n## Details\n\nOld\n\n## Other\n\nKeep")
 
-        obsidian_wiki.update_document(
+        fundus.update_document(
             self.config,
             "demo",
-            "Wiki/demo/article.md",
+            "Fundus/demo/article.md",
             "replace",
             "New",
             "Details",
@@ -466,11 +466,11 @@ class UpdateDocumentTest(WikiTestCase):
     def test_replace_mode_requires_section(self) -> None:
         self.write_article("# Article")
 
-        with self.assertRaisesRegex(obsidian_wiki.WikiError, "--section is required"):
-            obsidian_wiki.update_document(
+        with self.assertRaisesRegex(fundus.FundusError, "--section is required"):
+            fundus.update_document(
                 self.config,
                 "demo",
-                "Wiki/demo/article.md",
+                "Fundus/demo/article.md",
                 "replace",
                 "New",
                 None,
@@ -479,10 +479,10 @@ class UpdateDocumentTest(WikiTestCase):
     def test_rewrite_mode_replaces_complete_body(self) -> None:
         self.write_article("# Article\n\n## Old\n\nStale")
 
-        result = obsidian_wiki.update_document(
+        result = fundus.update_document(
             self.config,
             "demo",
-            "Wiki/demo/article.md",
+            "Fundus/demo/article.md",
             "rewrite",
             "## Overview\n\nNew complete article body.",
             None,
@@ -495,10 +495,10 @@ class UpdateDocumentTest(WikiTestCase):
     def test_rewrite_mode_preserves_frontmatter_and_refreshes_updated(self) -> None:
         self.write_article("# Article\n\nOld")
 
-        obsidian_wiki.update_document(
+        fundus.update_document(
             self.config,
             "demo",
-            "Wiki/demo/article.md",
+            "Fundus/demo/article.md",
             "rewrite",
             "New",
             None,
@@ -508,7 +508,7 @@ class UpdateDocumentTest(WikiTestCase):
         self.assertEqual(frontmatter["title"], "Article")
         self.assertEqual(frontmatter["created"], "2026-01-01T00:00:00+00:00")
         self.assertEqual(frontmatter["project"], "demo")
-        self.assertEqual(frontmatter["tags"], ["wiki", "project/demo"])
+        self.assertEqual(frontmatter["tags"], ["fundus", "project/demo"])
         self.assertNotEqual(frontmatter["updated"], "2026-01-01T00:00:00+00:00")
 
     def test_rewrite_mode_fills_missing_project_and_tags(self) -> None:
@@ -525,10 +525,10 @@ class UpdateDocumentTest(WikiTestCase):
             ),
         )
 
-        obsidian_wiki.update_document(
+        fundus.update_document(
             self.config,
             "demo",
-            "Wiki/demo/article.md",
+            "Fundus/demo/article.md",
             "rewrite",
             "New",
             None,
@@ -536,15 +536,15 @@ class UpdateDocumentTest(WikiTestCase):
 
         frontmatter = self.read_frontmatter()
         self.assertEqual(frontmatter["project"], "demo")
-        self.assertEqual(frontmatter["tags"], ["wiki", "project/demo"])
+        self.assertEqual(frontmatter["tags"], ["fundus", "project/demo"])
 
     def test_rewrite_mode_redacts_secrets(self) -> None:
         self.write_article("# Article\n\nOld")
 
-        obsidian_wiki.update_document(
+        fundus.update_document(
             self.config,
             "demo",
-            "Wiki/demo/article.md",
+            "Fundus/demo/article.md",
             "rewrite",
             "API_KEY=super-secret-token",
             None,
@@ -553,11 +553,11 @@ class UpdateDocumentTest(WikiTestCase):
         self.assertEqual(self.read_body(), "API_KEY: [REDACTED]")
 
     def test_update_missing_document_raises_error(self) -> None:
-        with self.assertRaisesRegex(obsidian_wiki.WikiError, "Document does not exist"):
-            obsidian_wiki.update_document(
+        with self.assertRaisesRegex(fundus.FundusError, "Document does not exist"):
+            fundus.update_document(
                 self.config,
                 "demo",
-                "Wiki/demo/missing.md",
+                "Fundus/demo/missing.md",
                 "rewrite",
                 "New",
                 None,
@@ -566,36 +566,36 @@ class UpdateDocumentTest(WikiTestCase):
     def test_update_document_without_frontmatter_raises_error(self) -> None:
         self.path.write_text("# Article\n\nNo frontmatter\n")
 
-        with self.assertRaisesRegex(obsidian_wiki.WikiError, "missing expected frontmatter"):
-            obsidian_wiki.update_document(
+        with self.assertRaisesRegex(fundus.FundusError, "missing expected frontmatter"):
+            fundus.update_document(
                 self.config,
                 "demo",
-                "Wiki/demo/article.md",
+                "Fundus/demo/article.md",
                 "rewrite",
                 "New",
                 None,
             )
 
 
-class AddFrontmatterTest(WikiTestCase):
+class AddFrontmatterTest(FundusTestCase):
     def test_add_frontmatter_preserves_body_and_uses_file_mtime(self) -> None:
         self.path.write_text("# Existing Title\n\nBody\n")
         os.utime(self.path, (1_700_000_000, 1_700_000_000))
-        original_timestamp = obsidian_wiki.filesystem_timestamp(self.path)
+        original_timestamp = fundus.filesystem_timestamp(self.path)
 
-        result = obsidian_wiki.add_frontmatter_to_document(
+        result = fundus.add_frontmatter_to_document(
             self.config,
             "demo",
-            "Wiki/demo/article.md",
+            "Fundus/demo/article.md",
             "Article",
             ["repair"],
         )
 
-        frontmatter, body = obsidian_wiki.parse_frontmatter(self.path.read_text())
-        self.assertEqual(result["path"], "Wiki/demo/article.md")
+        frontmatter, body = fundus.parse_frontmatter(self.path.read_text())
+        self.assertEqual(result["path"], "Fundus/demo/article.md")
         self.assertEqual(frontmatter["title"], "Article")
         self.assertEqual(frontmatter["project"], "demo")
-        self.assertEqual(frontmatter["tags"], ["wiki", "project/demo", "repair"])
+        self.assertEqual(frontmatter["tags"], ["fundus", "project/demo", "repair"])
         self.assertEqual(frontmatter["created"], frontmatter["updated"])
         self.assertEqual(frontmatter["updated"], original_timestamp)
         self.assertEqual(body.strip(), "# Existing Title\n\nBody")
@@ -608,17 +608,17 @@ class AddFrontmatterTest(WikiTestCase):
             "# Article\n"
         )
 
-        with self.assertRaisesRegex(obsidian_wiki.WikiError, "already has frontmatter"):
-            obsidian_wiki.add_frontmatter_to_document(
+        with self.assertRaisesRegex(fundus.FundusError, "already has frontmatter"):
+            fundus.add_frontmatter_to_document(
                 self.config,
                 "demo",
-                "Wiki/demo/article.md",
+                "Fundus/demo/article.md",
                 None,
                 None,
             )
 
 
-class NormalizeFrontmatterTest(WikiTestCase):
+class NormalizeFrontmatterTest(FundusTestCase):
     def write_legacy_note(self, relative_path: str, title: str = "Article", project: str = "demo") -> Path:
         path = self.vault_path / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -646,14 +646,14 @@ class NormalizeFrontmatterTest(WikiTestCase):
         return path
 
     def test_normalize_frontmatter_dry_run_reports_changes_without_writing(self) -> None:
-        path = self.write_legacy_note("Wiki/demo/article.md")
+        path = self.write_legacy_note("Fundus/demo/article.md")
         original_text = path.read_text()
 
-        result = obsidian_wiki.normalize_frontmatter_paths(
+        result = fundus.normalize_frontmatter_paths(
             self.config,
             "demo",
-            obsidian_wiki.project_scope("demo"),
-            "Wiki/demo/article.md",
+            fundus.project_scope("demo"),
+            "Fundus/demo/article.md",
         )
 
         self.assertEqual(result["changed_count"], 1)
@@ -667,23 +667,23 @@ class NormalizeFrontmatterTest(WikiTestCase):
 
     def test_normalize_frontmatter_apply_preserves_body_and_uses_path_project(self) -> None:
         path = self.write_legacy_note(
-            "Wiki/document-extraction-services/article.md",
+            "Fundus/document-extraction-services/article.md",
             "Document Extraction Router",
             "old-project",
         )
-        _, original_body = obsidian_wiki.parse_frontmatter(path.read_text())
-        obsidian_wiki.rebuild_index(self.config)
+        _, original_body = fundus.parse_frontmatter(path.read_text())
+        fundus.rebuild_index(self.config)
 
-        result = obsidian_wiki.normalize_frontmatter_paths(
+        result = fundus.normalize_frontmatter_paths(
             self.config,
             "Hypatos",
-            obsidian_wiki.project_scope("Hypatos"),
-            "Wiki/document-extraction-services/article.md",
+            fundus.project_scope("Hypatos"),
+            "Fundus/document-extraction-services/article.md",
             apply=True,
         )
 
-        frontmatter, body = obsidian_wiki.parse_frontmatter(path.read_text())
-        status = obsidian_wiki.index_status(self.config)
+        frontmatter, body = fundus.parse_frontmatter(path.read_text())
+        status = fundus.index_status(self.config)
         self.assertEqual(result["applied_count"], 1)
         self.assertEqual(body, original_body)
         self.assertEqual(frontmatter["type"], "Architecture")
@@ -695,50 +695,50 @@ class NormalizeFrontmatterTest(WikiTestCase):
         self.assertEqual(frontmatter["created"], "2026-01-01T00:00:00+00:00")
         self.assertEqual(frontmatter["updated"], "2026-01-02T00:00:00+00:00")
         self.assertEqual(frontmatter["timestamp"], "2026-01-02T00:00:00+00:00")
-        self.assertEqual(frontmatter["tags"], ["wiki", "project/document-extraction-services", "architecture"])
+        self.assertEqual(frontmatter["tags"], ["fundus", "project/document-extraction-services", "architecture"])
         self.assertFalse(status["stale"])
 
     def test_normalize_frontmatter_infers_area_and_removes_stale_project(self) -> None:
         path = self.write_legacy_note(
-            "Wiki/Epics/AI Agent Templates/references/source-notes.md",
+            "Fundus/Epics/AI Agent Templates/references/source-notes.md",
             "Source Notes",
             "backend-2032",
         )
 
-        obsidian_wiki.normalize_frontmatter_paths(
+        fundus.normalize_frontmatter_paths(
             self.config,
             "demo",
-            obsidian_wiki.area_scope("Epics/AI Agent Templates"),
+            fundus.area_scope("Epics/AI Agent Templates"),
             str(path.relative_to(self.vault_path)),
             apply=True,
         )
 
-        frontmatter, _ = obsidian_wiki.parse_frontmatter(path.read_text())
+        frontmatter, _ = fundus.parse_frontmatter(path.read_text())
         self.assertEqual(frontmatter["type"], "Reference")
         self.assertEqual(frontmatter["scope"], "area")
         self.assertEqual(frontmatter["scope_path"], "Epics/AI Agent Templates/references")
         self.assertNotIn("project", frontmatter)
-        self.assertEqual(frontmatter["tags"], ["wiki", "area/epics/ai-agent-templates/references", "architecture"])
+        self.assertEqual(frontmatter["tags"], ["fundus", "area/epics/ai-agent-templates/references", "architecture"])
 
     def test_normalize_frontmatter_can_add_missing_frontmatter_when_explicit(self) -> None:
         self.path.write_text("# Plain Note\n\nBody\n")
 
-        dry_run = obsidian_wiki.normalize_frontmatter_paths(
+        dry_run = fundus.normalize_frontmatter_paths(
             self.config,
             "demo",
-            obsidian_wiki.project_scope("demo"),
-            "Wiki/demo/article.md",
+            fundus.project_scope("demo"),
+            "Fundus/demo/article.md",
         )
-        applied = obsidian_wiki.normalize_frontmatter_paths(
+        applied = fundus.normalize_frontmatter_paths(
             self.config,
             "demo",
-            obsidian_wiki.project_scope("demo"),
-            "Wiki/demo/article.md",
+            fundus.project_scope("demo"),
+            "Fundus/demo/article.md",
             apply=True,
             add_missing=True,
         )
 
-        frontmatter, body = obsidian_wiki.parse_frontmatter(self.path.read_text())
+        frontmatter, body = fundus.parse_frontmatter(self.path.read_text())
         self.assertEqual(dry_run["skipped_count"], 1)
         self.assertEqual(applied["applied_count"], 1)
         self.assertEqual(frontmatter["title"], "Article")
@@ -746,14 +746,14 @@ class NormalizeFrontmatterTest(WikiTestCase):
         self.assertEqual(body, "# Plain Note\n\nBody\n")
 
 
-class BackupTest(WikiTestCase):
+class BackupTest(FundusTestCase):
     def test_backup_create_list_and_inspect_manifest(self) -> None:
-        result = obsidian_wiki.create_document(self.config, "demo", "Backed Up", "Body", ["ticket"])
-        obsidian_wiki.rebuild_index(self.config)
+        result = fundus.create_document(self.config, "demo", "Backed Up", "Body", ["ticket"])
+        fundus.rebuild_index(self.config)
 
-        manifest = obsidian_wiki.create_backup(self.config, "pre okf")
-        listed = obsidian_wiki.list_backups(self.config)
-        inspected = obsidian_wiki.inspect_backup(self.config, manifest["id"])
+        manifest = fundus.create_backup(self.config, "pre okf")
+        listed = fundus.list_backups(self.config)
+        inspected = fundus.inspect_backup(self.config, manifest["id"])
 
         self.assertEqual(manifest["label"], "pre okf")
         self.assertEqual(listed[0]["id"], manifest["id"])
@@ -761,29 +761,29 @@ class BackupTest(WikiTestCase):
         self.assertTrue((Path(manifest["backup_path"]) / result["path"]).exists())
         paths = {file["path"] for file in manifest["files"]}
         self.assertIn(result["path"], paths)
-        self.assertIn("Wiki/.obsidian-wiki-index.json", paths)
+        self.assertIn("Fundus/.fundus-index.json", paths)
 
     def test_backup_manifest_contains_checksums_and_excludes_backup_dir(self) -> None:
-        result = obsidian_wiki.create_document(self.config, "demo", "Backed Up", "Body", ["ticket"])
+        result = fundus.create_document(self.config, "demo", "Backed Up", "Body", ["ticket"])
 
-        manifest = obsidian_wiki.create_backup(self.config, "checksum")
+        manifest = fundus.create_backup(self.config, "checksum")
 
         entry = next(file for file in manifest["files"] if file["path"] == result["path"])
-        self.assertEqual(entry["sha256"], obsidian_wiki.file_sha256(self.vault_path / result["path"]))
-        self.assertFalse(any(obsidian_wiki.BACKUP_DIRNAME in file["path"] for file in manifest["files"]))
+        self.assertEqual(entry["sha256"], fundus.file_sha256(self.vault_path / result["path"]))
+        self.assertFalse(any(fundus.BACKUP_DIRNAME in file["path"] for file in manifest["files"]))
 
 
-class ScopeAndAreaTest(WikiTestCase):
+class ScopeAndAreaTest(FundusTestCase):
     def test_area_path_validation_rejects_unsafe_paths(self) -> None:
-        for area in ["", "../Other", "/absolute", "_archive/old", ".obsidian-wiki-backups/x"]:
+        for area in ["", "../Other", "/absolute", "_archive/old", ".fundus-backups/x"]:
             with self.subTest(area=area):
-                with self.assertRaises(obsidian_wiki.WikiError):
-                    obsidian_wiki.area_scope(area)
+                with self.assertRaises(fundus.FundusError):
+                    fundus.area_scope(area)
 
     def test_area_create_writes_okf_compatible_frontmatter(self) -> None:
-        scope = obsidian_wiki.area_scope("Epics/AI Agent Templates")
+        scope = fundus.area_scope("Epics/AI Agent Templates")
 
-        result = obsidian_wiki.create_document(
+        result = fundus.create_document(
             self.config,
             "demo",
             "Story Map",
@@ -795,8 +795,8 @@ class ScopeAndAreaTest(WikiTestCase):
             "epic/ai-agent-templates/story-map",
         )
 
-        self.assertEqual(result["path"], "Wiki/Epics/AI Agent Templates/story-map.md")
-        frontmatter, body = obsidian_wiki.parse_frontmatter((self.vault_path / result["path"]).read_text())
+        self.assertEqual(result["path"], "Fundus/Epics/AI Agent Templates/story-map.md")
+        frontmatter, body = fundus.parse_frontmatter((self.vault_path / result["path"]).read_text())
         self.assertEqual(frontmatter["type"], "Epic")
         self.assertEqual(frontmatter["description"], "Story map for the epic.")
         self.assertEqual(frontmatter["id"], "epic/ai-agent-templates/story-map")
@@ -807,63 +807,63 @@ class ScopeAndAreaTest(WikiTestCase):
         self.assertIn("# Story Map", body)
 
     def test_area_scan_uses_nested_paths_with_and_without_index(self) -> None:
-        area = obsidian_wiki.area_scope("Epics/AI Agent Templates")
-        obsidian_wiki.create_document(self.config, "demo", "Story Map", "Body", ["story-map"], area)
-        project_result = obsidian_wiki.create_document(self.config, "demo", "Story Map", "Project body", ["ticket"])
+        area = fundus.area_scope("Epics/AI Agent Templates")
+        fundus.create_document(self.config, "demo", "Story Map", "Body", ["story-map"], area)
+        project_result = fundus.create_document(self.config, "demo", "Story Map", "Project body", ["ticket"])
 
-        area_results = obsidian_wiki.scan_documents(self.config, "demo", "Story", scope=area)
-        project_results = obsidian_wiki.scan_documents(self.config, "demo", "Story")
-        obsidian_wiki.rebuild_index(self.config)
-        indexed_area_results = obsidian_wiki.scan_documents(self.config, "demo", "Story", scope=area)
+        area_results = fundus.scan_documents(self.config, "demo", "Story", scope=area)
+        project_results = fundus.scan_documents(self.config, "demo", "Story")
+        fundus.rebuild_index(self.config)
+        indexed_area_results = fundus.scan_documents(self.config, "demo", "Story", scope=area)
 
-        self.assertEqual([result["path"] for result in area_results], ["Wiki/Epics/AI Agent Templates/story-map.md"])
+        self.assertEqual([result["path"] for result in area_results], ["Fundus/Epics/AI Agent Templates/story-map.md"])
         self.assertEqual([result["path"] for result in project_results], [project_result["path"]])
-        self.assertEqual([result["path"] for result in indexed_area_results], ["Wiki/Epics/AI Agent Templates/story-map.md"])
+        self.assertEqual([result["path"] for result in indexed_area_results], ["Fundus/Epics/AI Agent Templates/story-map.md"])
 
     def test_recursive_index_status_tracks_nested_area_notes(self) -> None:
-        area = obsidian_wiki.area_scope("Epics/AI Agent Templates")
-        result = obsidian_wiki.create_document(self.config, "demo", "Story Map", "Body", ["story-map"], area)
-        nested_path = self.vault_path / "Wiki" / "Epics" / "AI Agent Templates" / "stories" / "backend-2292.md"
+        area = fundus.area_scope("Epics/AI Agent Templates")
+        result = fundus.create_document(self.config, "demo", "Story Map", "Body", ["story-map"], area)
+        nested_path = self.vault_path / "Fundus" / "Epics" / "AI Agent Templates" / "stories" / "backend-2292.md"
         nested_path.parent.mkdir(parents=True)
         nested_path.write_text((self.vault_path / result["path"]).read_text().replace("Story Map", "Backend 2292"))
 
-        payload = obsidian_wiki.rebuild_index(self.config)
-        status = obsidian_wiki.index_status(self.config)
+        payload = fundus.rebuild_index(self.config)
+        status = fundus.index_status(self.config)
 
         self.assertEqual(len(payload["documents"]), 2)
         self.assertFalse(status["stale"])
         self.assertEqual(status["documents"], 2)
 
     def test_archive_area_note_mirrors_nested_path_and_restores(self) -> None:
-        area = obsidian_wiki.area_scope("Epics/AI Agent Templates")
-        result = obsidian_wiki.create_document(self.config, "demo", "Story Map", "Body", ["story-map"], area)
-        obsidian_wiki.rebuild_index(self.config)
+        area = fundus.area_scope("Epics/AI Agent Templates")
+        result = fundus.create_document(self.config, "demo", "Story Map", "Body", ["story-map"], area)
+        fundus.rebuild_index(self.config)
 
-        archived = obsidian_wiki.archive_document(self.config, result["path"], "old")
-        restored = obsidian_wiki.restore_document(self.config, archived["path"])
+        archived = fundus.archive_document(self.config, result["path"], "old")
+        restored = fundus.restore_document(self.config, archived["path"])
 
-        self.assertEqual(archived["path"], "Wiki/_archive/Epics/AI Agent Templates/story-map.md")
+        self.assertEqual(archived["path"], "Fundus/_archive/Epics/AI Agent Templates/story-map.md")
         self.assertEqual(restored["path"], result["path"])
         self.assertTrue((self.vault_path / result["path"]).exists())
 
     def test_area_init_creates_skeleton_without_overwriting(self) -> None:
-        result = obsidian_wiki.area_init(self.config, "demo", "Epics/AI Agent Templates", "Epic", "AI Agent Templates")
-        second = obsidian_wiki.area_init(self.config, "demo", "Epics/AI Agent Templates", "Epic", "AI Agent Templates")
+        result = fundus.area_init(self.config, "demo", "Epics/AI Agent Templates", "Epic", "AI Agent Templates")
+        second = fundus.area_init(self.config, "demo", "Epics/AI Agent Templates", "Epic", "AI Agent Templates")
 
-        self.assertIn("Wiki/Epics/AI Agent Templates/overview.md", result["created"])
-        self.assertIn("Wiki/Epics/AI Agent Templates/index.md", second["skipped"])
-        for directory in obsidian_wiki.AREA_SUBDIRECTORIES:
-            self.assertTrue((self.vault_path / "Wiki" / "Epics" / "AI Agent Templates" / directory).is_dir())
+        self.assertIn("Fundus/Epics/AI Agent Templates/overview.md", result["created"])
+        self.assertIn("Fundus/Epics/AI Agent Templates/index.md", second["skipped"])
+        for directory in fundus.AREA_SUBDIRECTORIES:
+            self.assertTrue((self.vault_path / "Fundus" / "Epics" / "AI Agent Templates" / directory).is_dir())
 
     def test_move_document_moves_note_and_refreshes_index(self) -> None:
-        result = obsidian_wiki.create_document(self.config, "demo", "Movable", "Body", ["ticket"])
-        destination = "Wiki/Epics/AI Agent Templates/movable.md"
-        obsidian_wiki.rebuild_index(self.config)
+        result = fundus.create_document(self.config, "demo", "Movable", "Body", ["ticket"])
+        destination = "Fundus/Epics/AI Agent Templates/movable.md"
+        fundus.rebuild_index(self.config)
 
-        moved = obsidian_wiki.move_document(self.config, result["path"], destination)
-        scan_results = obsidian_wiki.scan_documents(self.config, "demo", "Movable", scope=obsidian_wiki.area_scope("Epics/AI Agent Templates"))
-        project_results = obsidian_wiki.scan_documents(self.config, "demo", "Movable")
-        frontmatter, _ = obsidian_wiki.parse_frontmatter((self.vault_path / destination).read_text())
+        moved = fundus.move_document(self.config, result["path"], destination)
+        scan_results = fundus.scan_documents(self.config, "demo", "Movable", scope=fundus.area_scope("Epics/AI Agent Templates"))
+        project_results = fundus.scan_documents(self.config, "demo", "Movable")
+        frontmatter, _ = fundus.parse_frontmatter((self.vault_path / destination).read_text())
 
         self.assertEqual(moved["path"], destination)
         self.assertFalse((self.vault_path / result["path"]).exists())

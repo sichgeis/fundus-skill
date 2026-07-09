@@ -19,26 +19,24 @@ SCRIPT_PATH = Path(__file__).resolve()
 SKILL_DIR = SCRIPT_PATH.parent.parent
 SKILL_CONFIG_PATH = SKILL_DIR / "config.json"
 PROJECT_CONFIG_RELATIVE_PATHS = [
-    Path(".agents") / "obsidian-wiki.json",
-    Path(".codex") / "obsidian-wiki.json",
-    Path(".claude") / "obsidian-wiki.json",
+    Path(".agents") / "fundus.json",
 ]
 DEFAULT_CONFIG = {
-    "wiki_dir": "Wiki",
-    "default_tags": ["wiki"],
+    "fundus_dir": "Fundus",
+    "default_tags": ["fundus"],
     "redaction": {
         "enabled": True,
         "patterns": ["API_KEY", "SECRET", "TOKEN", "PASSWORD"],
     },
 }
-INDEX_FILENAME = ".obsidian-wiki-index.json"
+INDEX_FILENAME = ".fundus-index.json"
 INDEX_VERSION = 1
 MAX_INDEX_EXCERPT_CHARS = 600
 MAX_SCAN_RESULTS = 20
 ARCHIVE_DIRNAME = "_archive"
-BACKUP_DIRNAME = ".obsidian-wiki-backups"
+BACKUP_DIRNAME = ".fundus-backups"
 BACKUP_MANIFEST_FILENAME = "manifest.json"
-RESERVED_WIKI_DIRNAMES = {ARCHIVE_DIRNAME, BACKUP_DIRNAME}
+RESERVED_FUNDUS_DIRNAMES = {ARCHIVE_DIRNAME, BACKUP_DIRNAME}
 ARCHIVE_DURABLE_TAGS = {"project-overview", "architecture", "runbook", "glossary"}
 ARCHIVE_BOOST_TAGS = {"ticket", "review", "investigation", "refinement"}
 AREA_SUBDIRECTORIES = [
@@ -53,14 +51,14 @@ AREA_SUBDIRECTORIES = [
 AREA_ROOT_DIRNAMES = {"Epics", "Domains", "Decisions", "Interviews", "References", "Logs", "Operations"}
 
 
-class WikiError(Exception):
+class FundusError(Exception):
     pass
 
 
 @dataclass
 class Config:
     vault_path: Path
-    wiki_dir: str
+    fundus_dir: str
     default_tags: list[str]
     redaction_enabled: bool
     redaction_patterns: list[str]
@@ -92,7 +90,7 @@ def load_json(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text())
     except json.JSONDecodeError as exc:
-        raise WikiError(f"Invalid JSON config at {path}: {exc}") from exc
+        raise FundusError(f"Invalid JSON config at {path}: {exc}") from exc
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -145,18 +143,18 @@ def resolve_config(project_root: Path) -> Config:
 
     vault_path = merged.get("vault_path")
     if not vault_path:
-        raise WikiError(
+        raise FundusError(
             "Missing vault_path. Set OBSIDIAN_VAULT_PATH, add it to "
-            ".agents/obsidian-wiki.json, or add it to the skill config."
+            ".agents/fundus.json, or add it to the skill config."
         )
 
-    wiki_dir = merged.get("wiki_dir") or DEFAULT_CONFIG["wiki_dir"]
+    fundus_dir = merged.get("fundus_dir") or DEFAULT_CONFIG["fundus_dir"]
     default_tags = merged.get("default_tags") or list(DEFAULT_CONFIG["default_tags"])
     redaction = merged.get("redaction") or {}
 
     return Config(
         vault_path=Path(vault_path).expanduser().resolve(),
-        wiki_dir=str(wiki_dir).strip("/") or DEFAULT_CONFIG["wiki_dir"],
+        fundus_dir=str(fundus_dir).strip("/") or DEFAULT_CONFIG["fundus_dir"],
         default_tags=list(default_tags),
         redaction_enabled=bool(redaction.get("enabled", True)),
         redaction_patterns=list(redaction.get("patterns") or DEFAULT_CONFIG["redaction"]["patterns"]),
@@ -170,7 +168,7 @@ def now_iso() -> str:
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     if not slug:
-        raise WikiError("Title must contain at least one alphanumeric character.")
+        raise FundusError("Title must contain at least one alphanumeric character.")
     return slug
 
 
@@ -209,28 +207,28 @@ def ensure_within(root: Path, target: Path) -> Path:
     try:
         target_resolved.relative_to(root_resolved)
     except ValueError as exc:
-        raise WikiError(f"Resolved path escapes the vault root: {target}") from exc
+        raise FundusError(f"Resolved path escapes the vault root: {target}") from exc
     return target_resolved
 
 
-def wiki_project_dir(config: Config, project_name: str) -> Path:
-    project_dir = config.vault_path / config.wiki_dir / project_name
+def fundus_project_dir(config: Config, project_name: str) -> Path:
+    project_dir = config.vault_path / config.fundus_dir / project_name
     return ensure_within(config.vault_path, project_dir)
 
 
 def normalize_area_path(area: str) -> str:
     original = area.strip()
     if Path(original).is_absolute():
-        raise WikiError("--area must be relative to the wiki root.")
+        raise FundusError("--area must be relative to the Fundus root.")
     raw = original.strip("/")
     if not raw:
-        raise WikiError("--area must not be empty.")
+        raise FundusError("--area must not be empty.")
     path = Path(raw)
     parts = [part for part in raw.split("/") if part]
     if any(part in {".", ".."} for part in parts):
-        raise WikiError("--area must not contain '.' or '..' path segments.")
-    if parts[0] in RESERVED_WIKI_DIRNAMES:
-        raise WikiError(f"--area must not target reserved wiki directory: {parts[0]}")
+        raise FundusError("--area must not contain '.' or '..' path segments.")
+    if parts[0] in RESERVED_FUNDUS_DIRNAMES:
+        raise FundusError(f"--area must not target reserved Fundus directory: {parts[0]}")
     return "/".join(parts)
 
 
@@ -249,32 +247,32 @@ def resolve_scope(project_name: str, area: str | None = None) -> Scope:
     return project_scope(project_name)
 
 
-def wiki_scope_dir(config: Config, scope: Scope) -> Path:
-    return ensure_within(config.vault_path, wiki_root_dir(config) / scope.path)
+def fundus_scope_dir(config: Config, scope: Scope) -> Path:
+    return ensure_within(config.vault_path, fundus_root_dir(config) / scope.path)
 
 
-def wiki_archive_dir(config: Config) -> Path:
-    return ensure_within(config.vault_path, wiki_root_dir(config) / ARCHIVE_DIRNAME)
+def fundus_archive_dir(config: Config) -> Path:
+    return ensure_within(config.vault_path, fundus_root_dir(config) / ARCHIVE_DIRNAME)
 
 
-def wiki_archive_project_dir(config: Config, project_name: str) -> Path:
-    return ensure_within(config.vault_path, wiki_archive_dir(config) / project_name)
+def fundus_archive_project_dir(config: Config, project_name: str) -> Path:
+    return ensure_within(config.vault_path, fundus_archive_dir(config) / project_name)
 
 
-def wiki_archive_scope_dir(config: Config, scope: Scope) -> Path:
-    return ensure_within(config.vault_path, wiki_archive_dir(config) / scope.path)
+def fundus_archive_scope_dir(config: Config, scope: Scope) -> Path:
+    return ensure_within(config.vault_path, fundus_archive_dir(config) / scope.path)
 
 
-def wiki_root_dir(config: Config) -> Path:
-    return ensure_within(config.vault_path, config.vault_path / config.wiki_dir)
+def fundus_root_dir(config: Config) -> Path:
+    return ensure_within(config.vault_path, config.vault_path / config.fundus_dir)
 
 
-def wiki_relative_path(config: Config, path: Path) -> str:
-    return str(ensure_within(config.vault_path, path).relative_to(wiki_root_dir(config)))
+def fundus_relative_path(config: Config, path: Path) -> str:
+    return str(ensure_within(config.vault_path, path).relative_to(fundus_root_dir(config)))
 
 
-def wiki_project_names(config: Config) -> list[str]:
-    root = wiki_root_dir(config)
+def fundus_project_names(config: Config) -> list[str]:
+    root = fundus_root_dir(config)
     if not root.exists():
         return []
     return sorted(
@@ -285,7 +283,7 @@ def wiki_project_names(config: Config) -> list[str]:
 
 
 def index_path(config: Config) -> Path:
-    return ensure_within(config.vault_path, wiki_root_dir(config) / INDEX_FILENAME)
+    return ensure_within(config.vault_path, fundus_root_dir(config) / INDEX_FILENAME)
 
 
 def backup_root_dir(config: Config) -> Path:
@@ -383,7 +381,7 @@ def format_frontmatter(data: dict[str, Any]) -> str:
 
 def read_content_arg(content: str | None, content_file: str | None) -> str:
     if bool(content) == bool(content_file):
-        raise WikiError("Provide exactly one of --content or --content-file.")
+        raise FundusError("Provide exactly one of --content or --content-file.")
     if content_file:
         path = Path(content_file).expanduser()
         return path.read_text()
@@ -456,9 +454,9 @@ def backup_id_for(label: str | None, timestamp: datetime | None = None) -> str:
 
 
 def iter_backup_source_files(config: Config) -> list[Path]:
-    root = wiki_root_dir(config)
+    root = fundus_root_dir(config)
     if not root.exists():
-        raise WikiError(f"Wiki root does not exist: {root}")
+        raise FundusError(f"Fundus root does not exist: {root}")
     files: list[Path] = []
     for path in root.rglob("*"):
         if not path.is_file():
@@ -473,11 +471,11 @@ def iter_backup_source_files(config: Config) -> list[Path]:
 def create_backup(config: Config, label: str | None = None) -> dict[str, Any]:
     created_at = datetime.now().astimezone()
     backup_id = backup_id_for(label, created_at)
-    root = wiki_root_dir(config)
+    root = fundus_root_dir(config)
     backup_root = backup_root_dir(config)
     destination_root = ensure_within(config.vault_path, backup_root / backup_id)
     if destination_root.exists():
-        raise WikiError(f"Backup already exists: {backup_id}")
+        raise FundusError(f"Backup already exists: {backup_id}")
 
     files = iter_backup_source_files(config)
     copied_files: list[dict[str, Any]] = []
@@ -485,14 +483,14 @@ def create_backup(config: Config, label: str | None = None) -> dict[str, Any]:
 
     for source_path in files:
         relative_path = source_path.relative_to(root)
-        destination_path = ensure_within(config.vault_path, destination_root / config.wiki_dir / relative_path)
+        destination_path = ensure_within(config.vault_path, destination_root / config.fundus_dir / relative_path)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, destination_path)
         size = source_path.stat().st_size
         total_bytes += size
         copied_files.append(
             {
-                "path": str((Path(config.wiki_dir) / relative_path).as_posix()),
+                "path": str((Path(config.fundus_dir) / relative_path).as_posix()),
                 "size": size,
                 "sha256": file_sha256(source_path),
             }
@@ -503,8 +501,8 @@ def create_backup(config: Config, label: str | None = None) -> dict[str, Any]:
         "label": label or "backup",
         "created": created_at.isoformat(),
         "source_vault_path": str(config.vault_path),
-        "source_wiki_dir": config.wiki_dir,
-        "source_wiki_path": str(root),
+        "source_fundus_dir": config.fundus_dir,
+        "source_fundus_path": str(root),
         "backup_path": str(destination_root),
         "file_count": len(copied_files),
         "byte_count": total_bytes,
@@ -537,10 +535,10 @@ def list_backups(config: Config) -> list[dict[str, Any]]:
 
 def inspect_backup(config: Config, backup_id: str) -> dict[str, Any]:
     if not backup_id or "/" in backup_id or "\\" in backup_id or backup_id in {".", ".."}:
-        raise WikiError("Backup id must be a single backup directory name.")
+        raise FundusError("Backup id must be a single backup directory name.")
     manifest_path = ensure_within(config.vault_path, backup_root_dir(config) / backup_id / BACKUP_MANIFEST_FILENAME)
     if not manifest_path.exists():
-        raise WikiError(f"Backup does not exist: {backup_id}")
+        raise FundusError(f"Backup does not exist: {backup_id}")
     manifest = load_json(manifest_path)
     manifest["manifest_path"] = str(manifest_path)
     return manifest
@@ -601,22 +599,22 @@ def make_excerpt(body: str) -> str:
     return text[:MAX_INDEX_EXCERPT_CHARS]
 
 
-def wiki_relative_parts_from_vault_path(config: Config, path: Path) -> tuple[str, ...]:
+def fundus_relative_parts_from_vault_path(config: Config, path: Path) -> tuple[str, ...]:
     try:
-        return tuple(ensure_within(config.vault_path, path).relative_to(wiki_root_dir(config)).parts)
+        return tuple(ensure_within(config.vault_path, path).relative_to(fundus_root_dir(config)).parts)
     except ValueError:
         return ()
 
 
-def active_wiki_relative_path_for_document(config: Config, doc: Document) -> str:
+def active_fundus_relative_path_for_document(config: Config, doc: Document) -> str:
     original_path = str(doc.frontmatter.get("original_path") or "")
     if original_path:
         try:
             original = resolve_doc_path(config, original_path)
-            return wiki_relative_path(config, original)
-        except WikiError:
+            return fundus_relative_path(config, original)
+        except FundusError:
             pass
-    parts = list(wiki_relative_parts_from_vault_path(config, doc.path))
+    parts = list(fundus_relative_parts_from_vault_path(config, doc.path))
     if parts and parts[0] == ARCHIVE_DIRNAME:
         return "/".join(parts[1:])
     return "/".join(parts)
@@ -625,7 +623,7 @@ def active_wiki_relative_path_for_document(config: Config, doc: Document) -> str
 def scope_metadata_for_document(config: Config, doc: Document) -> dict[str, Any]:
     explicit_scope = str(doc.frontmatter.get("scope") or "")
     explicit_scope_path = str(doc.frontmatter.get("scope_path") or "")
-    active_relative = active_wiki_relative_path_for_document(config, doc)
+    active_relative = active_fundus_relative_path_for_document(config, doc)
     parent_path = str(Path(active_relative).parent).replace(".", "")
 
     if explicit_scope == "area" or explicit_scope_path:
@@ -661,8 +659,8 @@ def index_entry_for_document(config: Config, doc: Document) -> dict[str, Any]:
     }
 
 
-def iter_wiki_markdown_paths(config: Config) -> list[Path]:
-    root = wiki_root_dir(config)
+def iter_fundus_markdown_paths(config: Config) -> list[Path]:
+    root = fundus_root_dir(config)
     if not root.exists():
         return []
     active_paths = [
@@ -671,7 +669,7 @@ def iter_wiki_markdown_paths(config: Config) -> list[Path]:
         if ARCHIVE_DIRNAME not in path.relative_to(root).parts
         and BACKUP_DIRNAME not in path.relative_to(root).parts
     ]
-    archive_paths = list(wiki_archive_dir(config).rglob("*.md")) if wiki_archive_dir(config).exists() else []
+    archive_paths = list(fundus_archive_dir(config).rglob("*.md")) if fundus_archive_dir(config).exists() else []
     return sorted([*active_paths, *archive_paths])
 
 
@@ -689,7 +687,7 @@ def write_index(config: Config, documents: list[dict[str, Any]]) -> dict[str, An
     payload = {
         "version": INDEX_VERSION,
         "generated": now_iso(),
-        "wiki_dir": config.wiki_dir,
+        "fundus_dir": config.fundus_dir,
         "documents": sorted(documents, key=lambda doc: str(doc.get("path", ""))),
     }
     atomic_write(index_path(config), json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -698,7 +696,7 @@ def write_index(config: Config, documents: list[dict[str, Any]]) -> dict[str, An
 
 def rebuild_index(config: Config) -> dict[str, Any]:
     documents: list[dict[str, Any]] = []
-    for path in iter_wiki_markdown_paths(config):
+    for path in iter_fundus_markdown_paths(config):
         doc = load_document(path, config.vault_path)
         documents.append(index_entry_for_document(config, doc))
     return write_index(config, documents)
@@ -798,10 +796,10 @@ def resolve_doc_path(config: Config, path_arg: str) -> Path:
     return ensure_within(config.vault_path, config.vault_path / raw_path)
 
 
-def entry_matches_scope(entry: dict[str, Any], scope: Scope) -> bool:
+def entry_matches_scope(config: Config, entry: dict[str, Any], scope: Scope) -> bool:
     path = str(entry.get("path") or "")
-    prefix = f"Wiki/{scope.path}/"
-    archive_prefix = f"Wiki/{ARCHIVE_DIRNAME}/{scope.path}/"
+    prefix = f"{config.fundus_dir}/{scope.path}/"
+    archive_prefix = f"{config.fundus_dir}/{ARCHIVE_DIRNAME}/{scope.path}/"
     if scope.kind == "project":
         return (
             entry.get("scope") == "project"
@@ -811,10 +809,10 @@ def entry_matches_scope(entry: dict[str, Any], scope: Scope) -> bool:
 
 
 def markdown_paths_for_scope(config: Config, scope: Scope, include_archived: bool = False) -> list[Path]:
-    active_dir = wiki_scope_dir(config, scope)
+    active_dir = fundus_scope_dir(config, scope)
     paths = sorted(active_dir.rglob("*.md")) if active_dir.exists() else []
     if include_archived:
-        archive_dir = wiki_archive_scope_dir(config, scope)
+        archive_dir = fundus_archive_scope_dir(config, scope)
         if archive_dir.exists():
             paths.extend(sorted(archive_dir.rglob("*.md")))
     return paths
@@ -834,7 +832,7 @@ def scan_documents(
     if existing_index is not None:
         matches: list[tuple[int, str, dict[str, Any]]] = []
         for entry in existing_index["documents"]:
-            if not entry_matches_scope(entry, active_scope):
+            if not entry_matches_scope(config, entry, active_scope):
                 continue
             if entry.get("archived") and not include_archived:
                 continue
@@ -846,8 +844,8 @@ def scan_documents(
         matches.sort(key=lambda item: (-item[0], str(item[2].get("title", ""))))
         return [present_index_entry(entry, score, reason, include_snippet) for score, reason, entry in matches[:limit]]
 
-    scope_dir = wiki_scope_dir(config, active_scope)
-    archive_scope_dir = wiki_archive_scope_dir(config, active_scope)
+    scope_dir = fundus_scope_dir(config, active_scope)
+    archive_scope_dir = fundus_archive_scope_dir(config, active_scope)
     if not scope_dir.exists() and not (include_archived and archive_scope_dir.exists()):
         return []
 
@@ -929,11 +927,11 @@ def create_document(
     document_id: str | None = None,
 ) -> dict[str, Any]:
     active_scope = scope or project_scope(project_name)
-    project_dir = wiki_scope_dir(config, active_scope)
+    project_dir = fundus_scope_dir(config, active_scope)
     slug = slugify(title)
     path = ensure_within(config.vault_path, project_dir / f"{slug}.md")
     if path.exists():
-        raise WikiError(f"Document already exists: {path.relative_to(config.vault_path)}")
+        raise FundusError(f"Document already exists: {path.relative_to(config.vault_path)}")
 
     frontmatter = frontmatter_for_new_document(
         config,
@@ -1010,24 +1008,24 @@ def update_document(
 ) -> dict[str, Any]:
     path = resolve_doc_path(config, path_arg)
     if not path.exists():
-        raise WikiError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}")
 
     text = path.read_text()
     frontmatter, body = parse_frontmatter(text)
     if not frontmatter:
-        raise WikiError(f"Document is missing expected frontmatter: {path}")
+        raise FundusError(f"Document is missing expected frontmatter: {path}")
 
     redacted_content = redact_secrets(new_content, config)
     if mode == "append":
         updated_body = append_body(body, redacted_content)
     elif mode == "replace":
         if not section:
-            raise WikiError("--section is required when mode is replace.")
+            raise FundusError("--section is required when mode is replace.")
         updated_body = replace_section(body, section, redacted_content)
     elif mode == "rewrite":
         updated_body = redacted_content.strip()
     else:
-        raise WikiError(f"Unknown update mode: {mode}")
+        raise FundusError(f"Unknown update mode: {mode}")
 
     frontmatter["updated"] = now_iso()
     frontmatter["timestamp"] = frontmatter["updated"]
@@ -1078,7 +1076,7 @@ def update_document(
 def read_document(config: Config, path_arg: str) -> str:
     path = resolve_doc_path(config, path_arg)
     if not path.exists():
-        raise WikiError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}")
     return path.read_text()
 
 
@@ -1099,12 +1097,12 @@ def add_frontmatter_to_document(
 ) -> dict[str, Any]:
     path = resolve_doc_path(config, path_arg)
     if not path.exists():
-        raise WikiError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}")
 
     text = path.read_text()
     existing_frontmatter, body = parse_frontmatter(text)
     if existing_frontmatter:
-        raise WikiError(f"Document already has frontmatter: {path.relative_to(config.vault_path)}")
+        raise FundusError(f"Document already has frontmatter: {path.relative_to(config.vault_path)}")
 
     timestamp = filesystem_timestamp(path)
     active_scope = scope or project_scope(project_name)
@@ -1134,31 +1132,31 @@ def add_frontmatter_to_document(
     }
 
 
-def wiki_relative_parts_for_active_document(config: Config, path: Path, frontmatter: dict[str, Any]) -> tuple[str, ...]:
+def fundus_relative_parts_for_active_document(config: Config, path: Path, frontmatter: dict[str, Any]) -> tuple[str, ...]:
     original_path = str(frontmatter.get("original_path") or "")
     if original_path:
         parts = Path(original_path).parts
-        if parts and parts[0] == config.wiki_dir:
+        if parts and parts[0] == config.fundus_dir:
             return tuple(parts[1:])
         return tuple(parts)
 
-    parts = wiki_relative_parts_from_vault_path(config, path)
+    parts = fundus_relative_parts_from_vault_path(config, path)
     if parts and parts[0] == ARCHIVE_DIRNAME:
         return tuple(parts[1:])
     return parts
 
 
 def infer_scope_from_document_path(config: Config, path: Path, frontmatter: dict[str, Any]) -> tuple[Scope, str | None]:
-    parts = wiki_relative_parts_for_active_document(config, path, frontmatter)
+    parts = fundus_relative_parts_for_active_document(config, path, frontmatter)
     if not parts:
-        raise WikiError(f"Document path is not inside the wiki root: {path}")
-    if parts[0] in RESERVED_WIKI_DIRNAMES:
-        raise WikiError(f"Cannot normalize reserved wiki path: {path.relative_to(config.vault_path)}")
+        raise FundusError(f"Document path is not inside the Fundus root: {path}")
+    if parts[0] in RESERVED_FUNDUS_DIRNAMES:
+        raise FundusError(f"Cannot normalize reserved Fundus path: {path.relative_to(config.vault_path)}")
 
     if parts[0] in AREA_ROOT_DIRNAMES:
         area_parts = parts[:-1]
         if not area_parts:
-            raise WikiError(f"Cannot infer area scope for path: {path.relative_to(config.vault_path)}")
+            raise FundusError(f"Cannot infer area scope for path: {path.relative_to(config.vault_path)}")
         area_path = "/".join(area_parts)
         return area_scope(area_path), None
 
@@ -1171,7 +1169,7 @@ def infer_doc_type_from_path(config: Config, path: Path, frontmatter: dict[str, 
     if existing_type:
         return existing_type
 
-    parts = [part.casefold() for part in wiki_relative_parts_for_active_document(config, path, frontmatter)]
+    parts = [part.casefold() for part in fundus_relative_parts_for_active_document(config, path, frontmatter)]
     filename = parts[-1] if parts else path.name.casefold()
     raw_tags = frontmatter.get("tags") or []
     existing_tags = raw_tags if isinstance(raw_tags, list) else [str(raw_tags)]
@@ -1214,7 +1212,7 @@ def scope_neutral_tags(tags: list[str]) -> list[str]:
         normalized = str(tag).strip()
         if not normalized:
             continue
-        if normalized == "wiki" or normalized.startswith("project/") or normalized.startswith("area/"):
+        if normalized in {"fundus", "wiki"} or normalized.startswith("project/") or normalized.startswith("area/"):
             continue
         if normalized not in neutral:
             neutral.append(normalized)
@@ -1241,10 +1239,10 @@ def normalize_frontmatter_for_path(
 ) -> dict[str, Any]:
     safe_path = resolve_doc_path(config, str(path))
     if safe_path.suffix != ".md":
-        raise WikiError(f"Can only normalize Markdown documents: {safe_path.relative_to(config.vault_path)}")
-    ensure_within(wiki_root_dir(config), safe_path)
+        raise FundusError(f"Can only normalize Markdown documents: {safe_path.relative_to(config.vault_path)}")
+    ensure_within(fundus_root_dir(config), safe_path)
     if not safe_path.exists():
-        raise WikiError(f"Document does not exist: {path}")
+        raise FundusError(f"Document does not exist: {path}")
 
     text = safe_path.read_text()
     frontmatter, body = parse_frontmatter(text)
@@ -1294,7 +1292,7 @@ def normalize_frontmatter_for_path(
     body_sha256 = hashlib.sha256(body.encode()).hexdigest()
     body_unchanged = rendered_body == body
     if not body_unchanged:
-        raise WikiError(f"Refusing to normalize because body would change: {safe_path.relative_to(config.vault_path)}")
+        raise FundusError(f"Refusing to normalize because body would change: {safe_path.relative_to(config.vault_path)}")
 
     if apply and changes:
         atomic_write(safe_path, rendered)
@@ -1326,16 +1324,16 @@ def normalize_frontmatter_paths(
     limit: int | None = None,
 ) -> dict[str, Any]:
     if path_arg and global_scope:
-        raise WikiError("--path and --global cannot be used together.")
+        raise FundusError("--path and --global cannot be used together.")
     if path_arg and limit is not None:
-        raise WikiError("--limit cannot be used with --path.")
+        raise FundusError("--limit cannot be used with --path.")
 
     if path_arg:
         paths = [resolve_doc_path(config, path_arg)]
         scope_name = "path"
         scope_path = path_arg
     elif global_scope:
-        root = wiki_root_dir(config)
+        root = fundus_root_dir(config)
         paths = [
             path
             for path in sorted(root.rglob("*.md"))
@@ -1394,8 +1392,8 @@ def age_days(value: str | None) -> int | None:
 
 
 def archive_destination_for(config: Config, doc: Document) -> Path:
-    relative_path = Path(active_wiki_relative_path_for_document(config, doc))
-    return ensure_within(config.vault_path, wiki_archive_dir(config) / relative_path)
+    relative_path = Path(active_fundus_relative_path_for_document(config, doc))
+    return ensure_within(config.vault_path, fundus_archive_dir(config) / relative_path)
 
 
 def archive_candidates(
@@ -1409,7 +1407,7 @@ def archive_candidates(
     cutoff = datetime.now().astimezone() - timedelta(days=older_than_days)
     candidates: list[dict[str, Any]] = []
     active_scope = scope or project_scope(project_name)
-    scope_dir = wiki_scope_dir(config, active_scope)
+    scope_dir = fundus_scope_dir(config, active_scope)
     if not scope_dir.exists():
         return []
 
@@ -1462,7 +1460,7 @@ def archive_candidates_global(
     force: bool = False,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for project_name in wiki_project_names(config):
+    for project_name in fundus_project_names(config):
         for candidate in archive_candidates(config, project_name, older_than_days, limit, force):
             candidates.append({"project": project_name, **candidate})
 
@@ -1492,11 +1490,11 @@ def cleanup_empty_directories(
     global_scope: bool = False,
     scope: Scope | None = None,
 ) -> dict[str, Any]:
-    root = wiki_root_dir(config)
-    archive_root = wiki_archive_dir(config)
+    root = fundus_root_dir(config)
+    archive_root = fundus_archive_dir(config)
     protected_directories = {root, archive_root}
     active_scope = scope or project_scope(project_name)
-    candidate_roots = [root] if global_scope else [wiki_scope_dir(config, active_scope), wiki_archive_scope_dir(config, active_scope)]
+    candidate_roots = [root] if global_scope else [fundus_scope_dir(config, active_scope), fundus_archive_scope_dir(config, active_scope)]
     candidates: list[Path] = []
 
     for candidate_root in candidate_roots:
@@ -1523,17 +1521,17 @@ def cleanup_empty_directories(
 def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[str, Any]:
     source_path = resolve_doc_path(config, path_arg)
     if not source_path.exists():
-        raise WikiError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}")
 
     doc = load_document(source_path, config.vault_path)
     if not doc.frontmatter:
-        raise WikiError(f"Document is missing expected frontmatter: {source_path}")
+        raise FundusError(f"Document is missing expected frontmatter: {source_path}")
     if frontmatter_bool(doc.frontmatter.get("archived")):
-        raise WikiError(f"Document is already archived: {doc.relative_path}")
+        raise FundusError(f"Document is already archived: {doc.relative_path}")
 
     destination_path = archive_destination_for(config, doc)
     if destination_path.exists():
-        raise WikiError(f"Archive destination already exists: {destination_path.relative_to(config.vault_path)}")
+        raise FundusError(f"Archive destination already exists: {destination_path.relative_to(config.vault_path)}")
 
     timestamp = now_iso()
     frontmatter = dict(doc.frontmatter)
@@ -1545,7 +1543,7 @@ def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[
 
     atomic_write(destination_path, render_existing_document(frontmatter, doc.body))
     source_path.unlink()
-    active_directory_removed = remove_empty_directory(source_path.parent, {wiki_root_dir(config), wiki_archive_dir(config)})
+    active_directory_removed = remove_empty_directory(source_path.parent, {fundus_root_dir(config), fundus_archive_dir(config)})
     refresh_index_entry(config, source_path)
     refresh_index_entry(config, destination_path)
     return {
@@ -1561,20 +1559,20 @@ def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[
 def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
     archive_path = resolve_doc_path(config, path_arg)
     if not archive_path.exists():
-        raise WikiError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}")
 
     doc = load_document(archive_path, config.vault_path)
     if not doc.frontmatter:
-        raise WikiError(f"Document is missing expected frontmatter: {archive_path}")
+        raise FundusError(f"Document is missing expected frontmatter: {archive_path}")
     if not frontmatter_bool(doc.frontmatter.get("archived")):
-        raise WikiError(f"Document is not archived: {doc.relative_path}")
+        raise FundusError(f"Document is not archived: {doc.relative_path}")
 
     original_path = str(doc.frontmatter.get("original_path") or "")
     if not original_path:
-        raise WikiError(f"Archived document is missing original_path: {doc.relative_path}")
+        raise FundusError(f"Archived document is missing original_path: {doc.relative_path}")
     destination_path = resolve_doc_path(config, original_path)
     if destination_path.exists():
-        raise WikiError(f"Restore destination already exists: {original_path}")
+        raise FundusError(f"Restore destination already exists: {original_path}")
 
     frontmatter = dict(doc.frontmatter)
     timestamp = now_iso()
@@ -1584,7 +1582,7 @@ def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
 
     atomic_write(destination_path, render_existing_document(frontmatter, doc.body))
     archive_path.unlink()
-    archive_directory_removed = remove_empty_directory(archive_path.parent, {wiki_archive_dir(config), wiki_root_dir(config)})
+    archive_directory_removed = remove_empty_directory(archive_path.parent, {fundus_archive_dir(config), fundus_root_dir(config)})
     refresh_index_entry(config, archive_path)
     refresh_index_entry(config, destination_path)
     return {
@@ -1598,7 +1596,7 @@ def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
 
 def area_init(config: Config, project_name: str, area: str, area_type: str, title: str) -> dict[str, Any]:
     scope = area_scope(area)
-    root = wiki_scope_dir(config, scope)
+    root = fundus_scope_dir(config, scope)
     created_paths: list[str] = []
     skipped_paths: list[str] = []
 
@@ -1670,14 +1668,14 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
     source_path = resolve_doc_path(config, source_arg)
     destination_path = resolve_doc_path(config, destination_arg)
     if not source_path.exists():
-        raise WikiError(f"Document does not exist: {source_arg}")
+        raise FundusError(f"Document does not exist: {source_arg}")
     if destination_path.exists():
-        raise WikiError(f"Move destination already exists: {destination_arg}")
-    root = wiki_root_dir(config)
+        raise FundusError(f"Move destination already exists: {destination_arg}")
+    root = fundus_root_dir(config)
     ensure_within(root, source_path)
     ensure_within(root, destination_path)
     if ARCHIVE_DIRNAME in source_path.relative_to(root).parts or ARCHIVE_DIRNAME in destination_path.relative_to(root).parts:
-        raise WikiError("Move source and destination must be active wiki paths, not archive paths.")
+        raise FundusError("Move source and destination must be active Fundus paths, not archive paths.")
 
     doc = load_document(source_path, config.vault_path)
     destination_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1691,15 +1689,15 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
         atomic_write(source_path, render_existing_document(frontmatter, stub_body))
     else:
         source_path.unlink()
-        remove_empty_directory(source_path.parent, {wiki_root_dir(config), wiki_archive_dir(config)})
+        remove_empty_directory(source_path.parent, {fundus_root_dir(config), fundus_archive_dir(config)})
     moved_doc = load_document(destination_path, config.vault_path)
     moved_frontmatter = dict(moved_doc.frontmatter)
     moved_frontmatter["updated"] = now_iso()
     moved_frontmatter["moved_from"] = doc.relative_path
-    destination_wiki_relative = destination_path.relative_to(wiki_root_dir(config)).as_posix()
-    destination_parent = str(Path(destination_wiki_relative).parent)
+    destination_fundus_relative = destination_path.relative_to(fundus_root_dir(config)).as_posix()
+    destination_parent = str(Path(destination_fundus_relative).parent)
     existing_project = str(moved_frontmatter.get("project") or "")
-    if destination_parent and (not existing_project or not destination_wiki_relative.startswith(f"{existing_project}/")):
+    if destination_parent and (not existing_project or not destination_fundus_relative.startswith(f"{existing_project}/")):
         moved_frontmatter.pop("project", None)
         moved_frontmatter["scope"] = "area"
         moved_frontmatter["scope_path"] = destination_parent
@@ -1722,8 +1720,8 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
 
 def archive_status(config: Config, project_name: str, scope: Scope | None = None) -> dict[str, Any]:
     active_scope = scope or project_scope(project_name)
-    active_dir = wiki_scope_dir(config, active_scope)
-    archive_dir = wiki_archive_scope_dir(config, active_scope)
+    active_dir = fundus_scope_dir(config, active_scope)
+    archive_dir = fundus_archive_scope_dir(config, active_scope)
     active_count = len(list(active_dir.rglob("*.md"))) if active_dir.exists() else 0
     archived_count = len(list(archive_dir.rglob("*.md"))) if archive_dir.exists() else 0
     return {
@@ -1739,7 +1737,7 @@ def archive_status(config: Config, project_name: str, scope: Scope | None = None
 def index_status(config: Config) -> dict[str, Any]:
     path = index_path(config)
     data = load_index(config)
-    markdown_paths = iter_wiki_markdown_paths(config)
+    markdown_paths = iter_fundus_markdown_paths(config)
     markdown_count = len(markdown_paths)
     indexed_count = len(data["documents"]) if data else 0
     indexed_mtimes = {doc.get("path"): doc.get("mtime_ns") for doc in data["documents"]} if data else {}
@@ -1770,8 +1768,8 @@ def doctor_report(config: Config, project_root: Path, project_name: str) -> dict
 
 
 def doctor_report_for_scope(config: Config, project_root: Path, project_name: str, scope: Scope) -> dict[str, Any]:
-    root = wiki_root_dir(config)
-    scope_dir = wiki_scope_dir(config, scope)
+    root = fundus_root_dir(config)
+    scope_dir = fundus_scope_dir(config, scope)
     config_sources = [str(path) for path in project_config_paths(project_root) if path.exists()]
     if SKILL_CONFIG_PATH.exists():
         config_sources.append(str(SKILL_CONFIG_PATH))
@@ -1785,36 +1783,36 @@ def doctor_report_for_scope(config: Config, project_root: Path, project_name: st
         "scope_path": scope.path,
         "config_sources": config_sources,
         "vault_path": str(config.vault_path),
-        "wiki_dir": config.wiki_dir,
-        "wiki_root": str(root),
-        "scope_wiki_dir": str(scope_dir),
-        "scope_wiki_exists": scope_dir.exists(),
+        "fundus_dir": config.fundus_dir,
+        "fundus_root": str(root),
+        "scope_fundus_dir": str(scope_dir),
+        "scope_fundus_exists": scope_dir.exists(),
         "index": index_status(config),
         "writes_possible": root.exists() or os.access(config.vault_path, os.W_OK),
     }
 
 
 def add_area_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--area", default=argparse.SUPPRESS, help="Target an explicit wiki area path under the wiki root.")
+    parser.add_argument("--area", default=argparse.SUPPRESS, help="Target an explicit Fundus area path under the Fundus root.")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manage persistent Obsidian wiki documents for the active project.")
+    parser = argparse.ArgumentParser(description="Manage persistent Fundus documents for the active project.")
     parser.add_argument("--project", help="Override the auto-detected project name.")
-    parser.add_argument("--area", help="Target an explicit wiki area path under the wiki root.")
+    parser.add_argument("--area", help="Target an explicit Fundus area path under the Fundus root.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    scan_parser = subparsers.add_parser("scan", help="List wiki documents for the active project.")
+    scan_parser = subparsers.add_parser("scan", help="List Fundus documents for the active project.")
     add_area_argument(scan_parser)
     scan_parser.add_argument("--query", help="Optional keywords to filter by indexed title, tags, filename, headings, and excerpt.")
     scan_parser.add_argument("--limit", type=int, default=MAX_SCAN_RESULTS, help=f"Maximum results to return. Default: {MAX_SCAN_RESULTS}.")
     scan_parser.add_argument("--include-snippet", action="store_true", help="Include short indexed snippets in scan results.")
     scan_parser.add_argument("--include-archived", action="store_true", help="Include archived documents in scan results.")
 
-    read_parser = subparsers.add_parser("read", help="Read a wiki document.")
-    read_parser.add_argument("--path", required=True, help="Wiki document path relative to the vault root.")
+    read_parser = subparsers.add_parser("read", help="Read a Fundus document.")
+    read_parser.add_argument("--path", required=True, help="Fundus document path relative to the vault root.")
 
-    create_parser = subparsers.add_parser("create", help="Create a new wiki document.")
+    create_parser = subparsers.add_parser("create", help="Create a new Fundus document.")
     add_area_argument(create_parser)
     create_parser.add_argument("--title", required=True, help="Document title.")
     create_parser.add_argument("--type", dest="doc_type", help="OKF-compatible document type. Default: Note.")
@@ -1826,7 +1824,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     update_parser = subparsers.add_parser("update", help="Append to, replace a section in, or rewrite a document.")
     add_area_argument(update_parser)
-    update_parser.add_argument("--path", required=True, help="Wiki document path relative to the vault root.")
+    update_parser.add_argument("--path", required=True, help="Fundus document path relative to the vault root.")
     update_parser.add_argument("--mode", required=True, choices=["append", "replace", "rewrite"], help="Update mode.")
     update_parser.add_argument("--section", help="Section heading to replace when using replace mode.")
     update_parser.add_argument("--content", help="Inline markdown content.")
@@ -1834,7 +1832,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     frontmatter_parser = subparsers.add_parser("add-frontmatter", help="Add generated frontmatter to an existing plain Markdown note.")
     add_area_argument(frontmatter_parser)
-    frontmatter_parser.add_argument("--path", required=True, help="Wiki document path relative to the vault root.")
+    frontmatter_parser.add_argument("--path", required=True, help="Fundus document path relative to the vault root.")
     frontmatter_parser.add_argument("--title", help="Title to store in frontmatter. Defaults to the filename title.")
     frontmatter_parser.add_argument("--type", dest="doc_type", help="OKF-compatible document type. Default: Note.")
     frontmatter_parser.add_argument("--description", help="Short document description. Defaults to the title.")
@@ -1846,54 +1844,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="Dry-run or apply OKF-compatible frontmatter normalization without changing note bodies.",
     )
     add_area_argument(normalize_frontmatter_parser)
-    normalize_frontmatter_parser.add_argument("--path", help="One wiki document path relative to the vault root.")
-    normalize_frontmatter_parser.add_argument("--global", dest="global_scope", action="store_true", help="Normalize all active wiki documents.")
+    normalize_frontmatter_parser.add_argument("--path", help="One Fundus document path relative to the vault root.")
+    normalize_frontmatter_parser.add_argument("--global", dest="global_scope", action="store_true", help="Normalize all active Fundus documents.")
     normalize_frontmatter_parser.add_argument("--include-archived", action="store_true", help="Include archived documents when normalizing a scope or globally.")
     normalize_frontmatter_parser.add_argument("--add-missing", action="store_true", help="Add generated OKF frontmatter to Markdown documents that have none.")
     normalize_frontmatter_parser.add_argument("--apply", action="store_true", help="Write changes. Without this flag, the command only reports planned changes.")
     normalize_frontmatter_parser.add_argument("--limit", type=int, help="Limit the number of documents processed for scoped or global dry-runs.")
 
-    move_parser = subparsers.add_parser("move", help="Move one wiki note to another active wiki path for later curation workflows.")
-    move_parser.add_argument("--from", dest="source", required=True, help="Source wiki document path relative to the vault root.")
-    move_parser.add_argument("--to", dest="destination", required=True, help="Destination wiki document path relative to the vault root.")
+    move_parser = subparsers.add_parser("move", help="Move one Fundus note to another active Fundus path for later curation workflows.")
+    move_parser.add_argument("--from", dest="source", required=True, help="Source Fundus document path relative to the vault root.")
+    move_parser.add_argument("--to", dest="destination", required=True, help="Destination Fundus document path relative to the vault root.")
     move_parser.add_argument("--leave-stub", action="store_true", help="Leave a short moved-note stub at the old path.")
 
-    backup_parser = subparsers.add_parser("backup", help="Create and inspect wiki backups.")
+    backup_parser = subparsers.add_parser("backup", help="Create and inspect Fundus backups.")
     backup_subparsers = backup_parser.add_subparsers(dest="backup_command", required=True)
-    backup_create_parser = backup_subparsers.add_parser("create", help="Create a backup of the configured wiki directory.")
+    backup_create_parser = backup_subparsers.add_parser("create", help="Create a backup of the configured Fundus directory.")
     backup_create_parser.add_argument("--label", help="Human label included in the backup id and manifest.")
-    backup_subparsers.add_parser("list", help="List available wiki backups.")
+    backup_subparsers.add_parser("list", help="List available Fundus backups.")
     backup_inspect_parser = backup_subparsers.add_parser("inspect", help="Inspect one backup manifest.")
     backup_inspect_parser.add_argument("--id", required=True, help="Backup id returned by backup create or backup list.")
 
-    area_parser = subparsers.add_parser("area", help="Initialize explicit cross-repository wiki areas.")
+    area_parser = subparsers.add_parser("area", help="Initialize explicit cross-repository Fundus areas.")
     area_subparsers = area_parser.add_subparsers(dest="area_command", required=True)
     area_init_parser = area_subparsers.add_parser("init", help="Create a safe area skeleton without overwriting existing files.")
-    area_init_parser.add_argument("--area", required=True, help="Area path under the wiki root.")
+    area_init_parser.add_argument("--area", required=True, help="Area path under the Fundus root.")
     area_init_parser.add_argument("--type", dest="area_type", default="Area", help="Overview document type. Default: Area.")
     area_init_parser.add_argument("--title", required=True, help="Human area title.")
 
-    index_parser = subparsers.add_parser("index", help="Manage the lightweight wiki search index.")
+    index_parser = subparsers.add_parser("index", help="Manage the lightweight Fundus search index.")
     index_subparsers = index_parser.add_subparsers(dest="index_command", required=True)
-    index_subparsers.add_parser("rebuild", help="Rebuild the wiki search index from Markdown documents.")
-    index_subparsers.add_parser("status", help="Report whether the wiki search index exists and is fresh.")
+    index_subparsers.add_parser("rebuild", help="Rebuild the Fundus search index from Markdown documents.")
+    index_subparsers.add_parser("status", help="Report whether the Fundus search index exists and is fresh.")
 
-    archive_parser = subparsers.add_parser("archive", help="Archive, restore, and inspect old wiki notes.")
+    archive_parser = subparsers.add_parser("archive", help="Archive, restore, and inspect old Fundus notes.")
     archive_subparsers = archive_parser.add_subparsers(dest="archive_command", required=True)
     archive_candidates_parser = archive_subparsers.add_parser("candidates", help="List explicit archive candidates without changing files.")
     add_area_argument(archive_candidates_parser)
     archive_candidates_parser.add_argument("--older-than-days", type=int, default=90, help="Minimum note age by updated timestamp. Default: 90.")
     archive_candidates_parser.add_argument("--limit", type=int, default=MAX_SCAN_RESULTS, help=f"Maximum candidates to return. Default: {MAX_SCAN_RESULTS}.")
     archive_candidates_parser.add_argument("--force", action="store_true", help="Include durable notes such as project overviews, architecture notes, runbooks, and glossary entries.")
-    archive_candidates_parser.add_argument("--global", dest="global_scope", action="store_true", help="List candidates across all active project wiki folders.")
-    archive_apply_parser = archive_subparsers.add_parser("apply", help="Archive one explicitly selected wiki note.")
-    archive_apply_parser.add_argument("--path", required=True, help="Active wiki document path relative to the vault root.")
+    archive_candidates_parser.add_argument("--global", dest="global_scope", action="store_true", help="List candidates across all active project Fundus folders.")
+    archive_apply_parser = archive_subparsers.add_parser("apply", help="Archive one explicitly selected Fundus note.")
+    archive_apply_parser.add_argument("--path", required=True, help="Active Fundus document path relative to the vault root.")
     archive_apply_parser.add_argument("--reason", help="Reason stored in archive frontmatter.")
-    archive_restore_parser = archive_subparsers.add_parser("restore", help="Restore one archived wiki note to its original path.")
-    archive_restore_parser.add_argument("--path", required=True, help="Archived wiki document path relative to the vault root.")
-    archive_cleanup_parser = archive_subparsers.add_parser("cleanup", help="Remove empty active and archived wiki folders.")
+    archive_restore_parser = archive_subparsers.add_parser("restore", help="Restore one archived Fundus note to its original path.")
+    archive_restore_parser.add_argument("--path", required=True, help="Archived Fundus document path relative to the vault root.")
+    archive_cleanup_parser = archive_subparsers.add_parser("cleanup", help="Remove empty active and archived Fundus folders.")
     add_area_argument(archive_cleanup_parser)
-    archive_cleanup_parser.add_argument("--global", dest="global_scope", action="store_true", help="Remove empty folders across all wiki project folders.")
+    archive_cleanup_parser.add_argument("--global", dest="global_scope", action="store_true", help="Remove empty folders across all Fundus project folders.")
     archive_status_parser = archive_subparsers.add_parser("status", help="Show active and archived note counts for the project or area.")
     add_area_argument(archive_status_parser)
 
@@ -1913,7 +1911,7 @@ def main() -> int:
         project_name = args.project or detect_project_name(project_root)
         area_arg = getattr(args, "area", None)
         if args.project and area_arg:
-            raise WikiError("--project and --area cannot be used together.")
+            raise FundusError("--project and --area cannot be used together.")
         scope = resolve_scope(project_name, area_arg)
 
         if args.command == "scan":
@@ -2075,8 +2073,8 @@ def main() -> int:
             print(json.dumps(doctor_report_for_scope(config, project_root, project_name, scope), indent=2))
             return 0
 
-        raise WikiError(f"Unknown command: {args.command}")
-    except WikiError as exc:
+        raise FundusError(f"Unknown command: {args.command}")
+    except FundusError as exc:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         return 1
 

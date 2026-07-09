@@ -12,35 +12,35 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-import obsidian_wiki as wiki
+import fundus as fundus_core
 
 
 @dataclass(frozen=True)
-class WikiContext:
+class FundusContext:
     project_root: Path
-    config: wiki.Config
+    config: fundus_core.Config
     project_name: str
-    scope: wiki.Scope
+    scope: fundus_core.Scope
 
 
-def resolve_context(project: str | None = None, project_root: str | None = None, area: str | None = None) -> WikiContext:
+def resolve_context(project: str | None = None, project_root: str | None = None, area: str | None = None) -> FundusContext:
     if project and area:
-        raise wiki.WikiError("project and area cannot both be provided.")
+        raise fundus_core.FundusError("project and area cannot both be provided.")
     start = Path(project_root).expanduser().resolve() if project_root else Path.cwd()
-    resolved_root = wiki.discover_project_root(start)
-    config = wiki.resolve_config(resolved_root)
-    project_name = project or wiki.detect_project_name(resolved_root)
-    return WikiContext(
+    resolved_root = fundus_core.discover_project_root(start)
+    config = fundus_core.resolve_config(resolved_root)
+    project_name = project or fundus_core.detect_project_name(resolved_root)
+    return FundusContext(
         project_root=resolved_root,
         config=config,
         project_name=project_name,
-        scope=wiki.resolve_scope(project_name, area),
+        scope=fundus_core.resolve_scope(project_name, area),
     )
 
 
-def scan_wiki(
+def scan_fundus(
     query: str | None = None,
-    limit: int = wiki.MAX_SCAN_RESULTS,
+    limit: int = fundus_core.MAX_SCAN_RESULTS,
     include_snippet: bool = False,
     include_archived: bool = False,
     project: str | None = None,
@@ -52,7 +52,7 @@ def scan_wiki(
         "project": context.project_name,
         "scope": context.scope.kind,
         "scope_path": context.scope.path,
-        "documents": wiki.scan_documents(
+        "documents": fundus_core.scan_documents(
             context.config,
             context.project_name,
             query,
@@ -66,7 +66,7 @@ def scan_wiki(
 
 def read_note(path: str, project_root: str | None = None) -> str:
     context = resolve_context(project_root=project_root)
-    return wiki.read_document(context.config, path)
+    return fundus_core.read_document(context.config, path)
 
 
 def create_note(
@@ -81,7 +81,7 @@ def create_note(
     area: str | None = None,
 ) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
-    return wiki.create_document(context.config, context.project_name, title, content, tags, context.scope, type, description, id)
+    return fundus_core.create_document(context.config, context.project_name, title, content, tags, context.scope, type, description, id)
 
 
 def update_note(
@@ -94,7 +94,7 @@ def update_note(
     area: str | None = None,
 ) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
-    return wiki.update_document(context.config, context.project_name, path, mode, content, section, context.scope)
+    return fundus_core.update_document(context.config, context.project_name, path, mode, content, section, context.scope)
 
 
 def add_frontmatter(
@@ -109,7 +109,7 @@ def add_frontmatter(
     area: str | None = None,
 ) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
-    return wiki.add_frontmatter_to_document(
+    return fundus_core.add_frontmatter_to_document(
         context.config,
         context.project_name,
         path,
@@ -134,7 +134,7 @@ def normalize_frontmatter(
     area: str | None = None,
 ) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
-    return wiki.normalize_frontmatter_paths(
+    return fundus_core.normalize_frontmatter_paths(
         context.config,
         context.project_name,
         context.scope,
@@ -149,39 +149,39 @@ def normalize_frontmatter(
 
 def move_note(path: str, destination: str, leave_stub: bool = False, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return wiki.move_document(context.config, path, destination, leave_stub)
+    return fundus_core.move_document(context.config, path, destination, leave_stub)
 
 
 def backup_create(label: str | None = None, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return wiki.create_backup(context.config, label)
+    return fundus_core.create_backup(context.config, label)
 
 
 def backup_list(project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return {"backups": wiki.list_backups(context.config)}
+    return {"backups": fundus_core.list_backups(context.config)}
 
 
 def backup_inspect(id: str, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return wiki.inspect_backup(context.config, id)
+    return fundus_core.inspect_backup(context.config, id)
 
 
 def area_init(area: str, title: str, type: str = "Area", project: str | None = None, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project, project_root)
-    return wiki.area_init(context.config, context.project_name, area, type, title)
+    return fundus_core.area_init(context.config, context.project_name, area, type, title)
 
 
 def index_status(project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return wiki.index_status(context.config)
+    return fundus_core.index_status(context.config)
 
 
 def index_rebuild(project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    payload = wiki.rebuild_index(context.config)
+    payload = fundus_core.rebuild_index(context.config)
     return {
-        "path": str(wiki.index_path(context.config).relative_to(context.config.vault_path)),
+        "path": str(fundus_core.index_path(context.config).relative_to(context.config.vault_path)),
         "documents": len(payload["documents"]),
         "generated": payload["generated"],
     }
@@ -189,7 +189,7 @@ def index_rebuild(project_root: str | None = None) -> dict[str, Any]:
 
 def archive_candidates(
     older_than_days: int = 90,
-    limit: int = wiki.MAX_SCAN_RESULTS,
+    limit: int = fundus_core.MAX_SCAN_RESULTS,
     force: bool = False,
     global_scope: bool = False,
     project: str | None = None,
@@ -198,9 +198,9 @@ def archive_candidates(
 ) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
     candidates = (
-        wiki.archive_candidates_global(context.config, older_than_days, limit, force)
+        fundus_core.archive_candidates_global(context.config, older_than_days, limit, force)
         if global_scope
-        else wiki.archive_candidates(context.config, context.project_name, older_than_days, limit, force, context.scope)
+        else fundus_core.archive_candidates(context.config, context.project_name, older_than_days, limit, force, context.scope)
     )
     return {
         "scope": "global" if global_scope else context.scope.kind,
@@ -212,12 +212,12 @@ def archive_candidates(
 
 def archive_apply(path: str, reason: str | None = None, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return wiki.archive_document(context.config, path, reason)
+    return fundus_core.archive_document(context.config, path, reason)
 
 
 def archive_restore(path: str, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return wiki.restore_document(context.config, path)
+    return fundus_core.restore_document(context.config, path)
 
 
 def archive_cleanup(
@@ -227,17 +227,17 @@ def archive_cleanup(
     area: str | None = None,
 ) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
-    return wiki.cleanup_empty_directories(context.config, context.project_name, global_scope, context.scope)
+    return fundus_core.cleanup_empty_directories(context.config, context.project_name, global_scope, context.scope)
 
 
 def archive_status(project: str | None = None, project_root: str | None = None, area: str | None = None) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
-    return wiki.archive_status(context.config, context.project_name, context.scope)
+    return fundus_core.archive_status(context.config, context.project_name, context.scope)
 
 
 def doctor(project: str | None = None, project_root: str | None = None, area: str | None = None) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
-    return wiki.doctor_report_for_scope(context.config, context.project_root, context.project_name, context.scope)
+    return fundus_core.doctor_report_for_scope(context.config, context.project_root, context.project_name, context.scope)
 
 
 def build_server() -> Any:
@@ -246,8 +246,8 @@ def build_server() -> Any:
     except ModuleNotFoundError as exc:
         raise RuntimeError("Missing dependency: install the Python MCP SDK with `pip install -r requirements.txt`.") from exc
 
-    server = FastMCP("obsidian-wiki")
-    server.tool()(scan_wiki)
+    server = FastMCP("fundus")
+    server.tool()(scan_fundus)
     server.tool()(read_note)
     server.tool()(create_note)
     server.tool()(update_note)
@@ -270,7 +270,7 @@ def build_server() -> Any:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Obsidian Wiki MCP stdio server.")
+    parser = argparse.ArgumentParser(description="Run the Fundus MCP stdio server.")
     parser.add_argument("--check", action="store_true", help="Validate that the server can be constructed, then exit.")
     return parser
 
@@ -280,11 +280,11 @@ def main() -> int:
     try:
         server = build_server()
         if args.check:
-            print(json.dumps({"ok": True, "server": "obsidian-wiki"}))
+            print(json.dumps({"ok": True, "server": "fundus"}))
             return 0
         server.run()
         return 0
-    except (RuntimeError, wiki.WikiError) as exc:
+    except (RuntimeError, fundus_core.FundusError) as exc:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         return 1
 

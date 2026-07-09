@@ -1,7 +1,7 @@
 {
   "vault_path": "/path/to/your/obsidian/vault",
-  "wiki_dir": "Wiki",
-  "default_tags": ["wiki"],
+  "fundus_dir": "Fundus",
+  "default_tags": ["fundus"],
   "redaction": {
     "enabled": true,
     "patterns": ["API_KEY", "SECRET", "TOKEN", "PASSWORD"]

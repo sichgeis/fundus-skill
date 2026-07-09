@@ -3,9 +3,9 @@
 Status: planned
 Date: 2026-07-09
 
-This document is the working plan for evolving the Obsidian Wiki skill from a repository-local wiki helper into an OKF-compatible, cross-repository knowledge base workflow.
+This document is the working plan for evolving the Fundus skill from a repository-local wiki helper into an OKF-compatible, cross-repository knowledge base workflow.
 
-The chosen direction is Option B: keep the existing Obsidian-first workflow, preserve current `Wiki/{project}/` notes, and add first-class support for cross-repo areas such as epics, business domains, functional capabilities, interviews, user stories, decisions, and research logs.
+The chosen direction is Option B: keep the existing Obsidian-first workflow, preserve current `Fundus/{project}/` notes, and add first-class support for cross-repo areas such as epics, business domains, functional capabilities, interviews, user stories, decisions, and research logs.
 
 ## Goals
 
@@ -28,10 +28,10 @@ The chosen direction is Option B: keep the existing Obsidian-first workflow, pre
 ## Design Principles
 
 1. Backward compatible by default.
-   Existing `Wiki/{project}/...` notes remain valid and searchable.
+   Existing `Fundus/{project}/...` notes remain valid and searchable.
 
 2. Helper-mediated writes.
-   Agents must continue to use `scripts/obsidian_wiki.py` or the MCP server. They should not write wiki notes directly.
+   Agents must continue to use `scripts/fundus.py` or the MCP server. They should not write wiki notes directly.
 
 3. Scopes, not fake projects.
    A cross-repo epic should be represented as an area scope, not by pretending the epic is a detected repository.
@@ -50,21 +50,21 @@ The chosen direction is Option B: keep the existing Obsidian-first workflow, pre
 
 ## Vocabulary
 
-- Project scope: the existing default scope. It is derived from the current repository and maps to `Wiki/{project}/`.
+- Project scope: the existing default scope. It is derived from the current repository and maps to `Fundus/{project}/`.
 - Area scope: an explicit cross-repo scope selected by a path such as `Epics/AI Agent Templates`, `Domains/Invoicing`, or `Capabilities/Agent Templates`.
-- Scope path: the path under `Wiki/` that bounds scans, creates, archive candidates, and curation work.
+- Scope path: the path under `Fundus/` that bounds scans, creates, archive candidates, and curation work.
 - Concept document: a normal Markdown note with frontmatter. This follows OKF language.
 - Area index: an `index.md` file that explains what is inside an area and links to important notes.
 - Area log: a `log.md` file that records meaningful changes and research activity for an area.
 - Resource: an external asset represented by a note, such as a GitHub repository, Jira issue, Confluence page, API spec, dashboard, or source file.
 - Curation decision: a migration action for an old note: keep, move, summarize, split, merge, archive, or delete after explicit confirmation.
 
-## Target Wiki Shape
+## Target Fundus Shape
 
 Keep the current project folders:
 
 ```text
-Wiki/
+Fundus/
   prompting-service/
   enrichment-hub/
 ```
@@ -72,7 +72,7 @@ Wiki/
 Add cross-repo areas:
 
 ```text
-Wiki/
+Fundus/
   Epics/
     AI Agent Templates/
       index.md
@@ -145,7 +145,7 @@ Compatibility rules:
 - `timestamp` should represent the last meaningful OKF-style content update.
 - `updated` can remain the helper's operational timestamp.
 - `id` should be stable across renames when possible.
-- Canonical graph links should be normal Markdown links, because OKF consumers understand them. Obsidian wikilinks may exist as an extra convenience, but they should not be the only machine-readable link form.
+- Canonical graph links should be normal Markdown links, because OKF consumers understand them. Funduslinks may exist as an extra convenience, but they should not be the only machine-readable link form.
 
 ## Note Types
 
@@ -176,11 +176,11 @@ The type list is a local convention, not a registry. Consumers must tolerate unk
 Default behavior remains:
 
 ```bash
-python scripts/obsidian_wiki.py scan --query "authentication"
-python scripts/obsidian_wiki.py create --title "Authentication Flow" --content-file /tmp/note.md
+python scripts/fundus.py scan --query "authentication"
+python scripts/fundus.py create --title "Authentication Flow" --content-file /tmp/note.md
 ```
 
-Without an explicit area selector, the helper detects the current repository and targets `Wiki/{project}/`.
+Without an explicit area selector, the helper detects the current repository and targets `Fundus/{project}/`.
 
 Project discovery should answer:
 
@@ -194,8 +194,8 @@ Project discovery should answer:
 Area behavior should be explicit:
 
 ```bash
-python scripts/obsidian_wiki.py scan --area "Epics/AI Agent Templates" --query "lineage"
-python scripts/obsidian_wiki.py create --area "Epics/AI Agent Templates" --title "Story Map" --content-file /tmp/story-map.md
+python scripts/fundus.py scan --area "Epics/AI Agent Templates" --query "lineage"
+python scripts/fundus.py create --area "Epics/AI Agent Templates" --title "Story Map" --content-file /tmp/story-map.md
 ```
 
 Area discovery should answer:
@@ -211,8 +211,8 @@ Area discovery should answer:
 Business/domain/capability areas use the same mechanism:
 
 ```bash
-python scripts/obsidian_wiki.py create --area "Domains/Invoicing" --title "Invoice Matching" --content-file /tmp/invoice-matching.md
-python scripts/obsidian_wiki.py create --area "Capabilities/Agent Templates" --title "Template Selection Flow" --content-file /tmp/template-selection.md
+python scripts/fundus.py create --area "Domains/Invoicing" --title "Invoice Matching" --content-file /tmp/invoice-matching.md
+python scripts/fundus.py create --area "Capabilities/Agent Templates" --title "Template Selection Flow" --content-file /tmp/template-selection.md
 ```
 
 These areas are for knowledge that is not owned by one repository:
@@ -229,8 +229,8 @@ These areas are for knowledge that is not owned by one repository:
 Interview notes should live under an area:
 
 ```text
-Wiki/Epics/AI Agent Templates/interviews/2026-07-09-product-discovery.md
-Wiki/Domains/Invoicing/interviews/2026-07-09-ap-clerk-workflow.md
+Fundus/Epics/AI Agent Templates/interviews/2026-07-09-product-discovery.md
+Fundus/Domains/Invoicing/interviews/2026-07-09-ap-clerk-workflow.md
 ```
 
 Interview notes should include:
@@ -251,8 +251,8 @@ Interview outputs should be distilled into domain concepts, decisions, story map
 Story notes should live under the epic when they contribute to a cross-repo goal:
 
 ```text
-Wiki/Epics/AI Agent Templates/stories/backend-2291.md
-Wiki/Epics/AI Agent Templates/stories/backend-2292.md
+Fundus/Epics/AI Agent Templates/stories/backend-2291.md
+Fundus/Epics/AI Agent Templates/stories/backend-2292.md
 ```
 
 Story notes should link to project-local implementation notes instead of duplicating every detail.
@@ -272,7 +272,7 @@ Recommended story sections:
 Decision notes should be small, durable, and easy to scan:
 
 ```text
-Wiki/Epics/AI Agent Templates/decisions/0001-use-area-scopes.md
+Fundus/Epics/AI Agent Templates/decisions/0001-use-area-scopes.md
 ```
 
 Recommended sections:
@@ -310,15 +310,15 @@ Add backup support before any migration or bulk rewrite.
 Recommended helper commands:
 
 ```bash
-python scripts/obsidian_wiki.py backup create --label okf-option-b-pre-migration
-python scripts/obsidian_wiki.py backup list
-python scripts/obsidian_wiki.py backup inspect --id 2026-07-09T120000-okf-option-b-pre-migration
+python scripts/fundus.py backup create --label okf-option-b-pre-migration
+python scripts/fundus.py backup list
+python scripts/fundus.py backup inspect --id 2026-07-09T120000-okf-option-b-pre-migration
 ```
 
 Recommended backup behavior:
 
-- Snapshot the configured `Wiki/` directory.
-- Store the backup outside the indexed wiki tree, for example `.obsidian-wiki-backups/`.
+- Snapshot the configured `Fundus/` directory.
+- Store the backup outside the indexed wiki tree, for example `.fundus-backups/`.
 - Include a manifest with timestamp, source vault, wiki dir, file count, byte count, and checksums.
 - Never overwrite an existing backup.
 - Exclude generated cache files when safe, but include Markdown notes and the current wiki index.
@@ -340,17 +340,17 @@ Recommended model:
 ```text
 project scope:
   selector: default or --project prompting-service
-  path: Wiki/prompting-service
+  path: Fundus/prompting-service
 
 area scope:
   selector: --area "Epics/AI Agent Templates"
-  path: Wiki/Epics/AI Agent Templates
+  path: Fundus/Epics/AI Agent Templates
 ```
 
 Implementation tasks:
 
 - Add a `Scope` dataclass or equivalent internal structure.
-- Add safe area path resolution under `wiki_root_dir(config)`.
+- Add safe area path resolution under `fundus_root_dir(config)`.
 - Reject absolute area paths and paths containing `..`.
 - Preserve the default project behavior when no area is passed.
 - Add `scope`, `scope_path`, and `area` metadata to index entries.
@@ -363,7 +363,7 @@ Acceptance criteria:
 
 ### Phase 2: Recursive Scan and Index
 
-Current scanning and indexing assume one Markdown level under `Wiki/{project}`. Area scopes need recursive traversal.
+Current scanning and indexing assume one Markdown level under `Fundus/{project}`. Area scopes need recursive traversal.
 
 Implementation tasks:
 
@@ -375,7 +375,7 @@ Implementation tasks:
 
 Acceptance criteria:
 
-- `Wiki/Epics/AI Agent Templates/stories/backend-2292.md` appears in area scans.
+- `Fundus/Epics/AI Agent Templates/stories/backend-2292.md` appears in area scans.
 - Project scans do not accidentally return unrelated area notes.
 - Global or explicit broad scans can find both project and area notes.
 - Index freshness detects nested notes.
@@ -399,7 +399,7 @@ Acceptance criteria:
 
 ### Phase 4: MCP Server
 
-Mirror the helper behavior in `scripts/obsidian_wiki_mcp.py`.
+Mirror the helper behavior in `scripts/fundus_mcp.py`.
 
 Implementation tasks:
 
@@ -422,13 +422,13 @@ Add support for safely creating area skeletons.
 Recommended command:
 
 ```bash
-python scripts/obsidian_wiki.py area init --area "Epics/AI Agent Templates" --type Epic --title "AI Agent Templates"
+python scripts/fundus.py area init --area "Epics/AI Agent Templates" --type Epic --title "AI Agent Templates"
 ```
 
 Generated structure:
 
 ```text
-Wiki/Epics/AI Agent Templates/
+Fundus/Epics/AI Agent Templates/
   index.md
   log.md
   overview.md
@@ -461,7 +461,7 @@ Implementation tasks:
 
 Acceptance criteria:
 
-- `Wiki/Epics/AI Agent Templates/foo.md` archives to `Wiki/_archive/Epics/AI Agent Templates/foo.md`.
+- `Fundus/Epics/AI Agent Templates/foo.md` archives to `Fundus/_archive/Epics/AI Agent Templates/foo.md`.
 - Restore returns the note to its original nested path.
 - Move operations are atomic and update the index.
 - Archive and move never escape the configured wiki root.
@@ -533,7 +533,7 @@ Migration is a separate curation phase after Option B is implemented and verifie
 Run the backup command and record the result:
 
 ```bash
-python scripts/obsidian_wiki.py backup create --label pre-okf-curation
+python scripts/fundus.py backup create --label pre-okf-curation
 ```
 
 Do not proceed until the backup exists and its manifest can be inspected.
@@ -561,8 +561,8 @@ Inventory fields:
 Recommended output:
 
 ```text
-Wiki/_curation/2026-07-okf-migration/inventory.md
-Wiki/_curation/2026-07-okf-migration/inventory.json
+Fundus/_curation/2026-07-okf-migration/inventory.md
+Fundus/_curation/2026-07-okf-migration/inventory.json
 ```
 
 The `_curation` area should be excluded from normal project/area note creation unless explicitly requested.
@@ -597,9 +597,9 @@ Before moving notes, create the target area skeletons.
 Initial target areas:
 
 ```text
-Wiki/Epics/AI Agent Templates/
-Wiki/Domains/Invoicing/
-Wiki/Capabilities/Agent Templates/
+Fundus/Epics/AI Agent Templates/
+Fundus/Domains/Invoicing/
+Fundus/Capabilities/Agent Templates/
 ```
 
 Only create areas that are backed by discovered notes or current work.
@@ -665,7 +665,7 @@ Ownership rule:
 These should be decided before implementation or during the first implementation PR:
 
 1. Backup location.
-   Recommended: `.obsidian-wiki-backups/` under the vault root, outside `Wiki/`, so backups are local but not indexed.
+   Recommended: `.fundus-backups/` under the vault root, outside `Fundus/`, so backups are local but not indexed.
 
 2. Area path casing.
    Recommended: keep human-friendly Obsidian paths such as `Epics/AI Agent Templates` rather than forcing lowercase OKF-style paths.

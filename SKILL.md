@@ -23,6 +23,7 @@ Use this skill when a user wants persistent repository, epic, domain, or other d
 - Prefer indexed scan results when available. Rebuild the index with `index rebuild` when `index status` or `doctor` reports it as missing or stale.
 - Archive stale notes only through explicit `archive apply --path ...`; use `archive candidates` for review, and do not bulk-archive without selected paths.
 - Create backups with `backup create --label ...` before migration, curation, or bulk path changes.
+- Normalize legacy frontmatter with `normalize-frontmatter`; run it as a dry-run first and add `--apply` only after reviewing the planned metadata changes.
 - Do not initialize new areas or migrate existing notes unless the user explicitly asks for that step.
 - Preserve concise, useful Markdown. The body is free-form, so choose headings and structure that fit the topic.
 - Created notes get OKF-compatible frontmatter and a generated `# Title` heading. If create content already starts with the same H1, the tool removes that duplicate heading automatically.
@@ -189,6 +190,25 @@ python /path/to/obsidian-wiki/scripts/obsidian_wiki.py index status
 ```
 
 ```bash
+python /path/to/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter \
+  --path "Wiki/my-project/legacy-note.md"
+```
+
+```bash
+python /path/to/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter \
+  --path "Wiki/my-project/legacy-note.md" \
+  --apply
+```
+
+```bash
+python /path/to/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter --global --limit 20
+```
+
+```bash
+python /path/to/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter --global --apply
+```
+
+```bash
 python /path/to/obsidian-wiki/scripts/obsidian_wiki.py backup create --label pre-curation
 ```
 
@@ -247,6 +267,9 @@ python /path/to/obsidian-wiki/scripts/obsidian_wiki.py doctor
 - `scan` returns compact JSON with titles, tags, vault-relative paths, updated timestamps, and indexed match scores/reasons when an index exists.
 - `scan` uses `{vault_path}/{wiki_dir}/.obsidian-wiki-index.json` when present and falls back to direct Markdown scanning when absent. It excludes archived notes unless `--include-archived` is passed.
 - `index rebuild` refreshes the lightweight search index from all project and area Markdown documents.
+- `normalize-frontmatter` upgrades existing notes to OKF-compatible metadata without changing note bodies. It is a dry-run unless `--apply` is passed, infers scope from the note path rather than the current working directory, refreshes the index for changed notes, and reports body hashes plus `body_unchanged`.
+- `normalize-frontmatter --global` scans all active wiki notes; add `--include-archived` only when archived notes should be normalized too.
+- `normalize-frontmatter --add-missing` adds generated frontmatter to plain Markdown notes; otherwise missing-frontmatter notes are reported and skipped.
 - `backup create` snapshots the configured wiki under `{vault_path}/.obsidian-wiki-backups/`; use it before migration or curation.
 - `area init` creates an explicit area skeleton but should only be run after the user asks to create that area.
 - `archive candidates` is read-only and suggests old notes by `updated` timestamp and tags. It scans the active project or selected area by default; pass `--global` to scan all active project wiki folders. Durable notes are excluded unless `--force` is passed.

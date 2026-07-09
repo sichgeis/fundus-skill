@@ -50,6 +50,7 @@ AREA_SUBDIRECTORIES = [
     "implementation-map",
     "references",
 ]
+AREA_ROOT_DIRNAMES = {"Epics", "Domains", "Decisions", "Interviews", "References", "Logs", "Operations"}
 
 
 class WikiError(Exception):
@@ -1133,6 +1134,246 @@ def add_frontmatter_to_document(
     }
 
 
+def wiki_relative_parts_for_active_document(config: Config, path: Path, frontmatter: dict[str, Any]) -> tuple[str, ...]:
+    original_path = str(frontmatter.get("original_path") or "")
+    if original_path:
+        parts = Path(original_path).parts
+        if parts and parts[0] == config.wiki_dir:
+            return tuple(parts[1:])
+        return tuple(parts)
+
+    parts = wiki_relative_parts_from_vault_path(config, path)
+    if parts and parts[0] == ARCHIVE_DIRNAME:
+        return tuple(parts[1:])
+    return parts
+
+
+def infer_scope_from_document_path(config: Config, path: Path, frontmatter: dict[str, Any]) -> tuple[Scope, str | None]:
+    parts = wiki_relative_parts_for_active_document(config, path, frontmatter)
+    if not parts:
+        raise WikiError(f"Document path is not inside the wiki root: {path}")
+    if parts[0] in RESERVED_WIKI_DIRNAMES:
+        raise WikiError(f"Cannot normalize reserved wiki path: {path.relative_to(config.vault_path)}")
+
+    if parts[0] in AREA_ROOT_DIRNAMES:
+        area_parts = parts[:-1]
+        if not area_parts:
+            raise WikiError(f"Cannot infer area scope for path: {path.relative_to(config.vault_path)}")
+        area_path = "/".join(area_parts)
+        return area_scope(area_path), None
+
+    project_name = parts[0]
+    return project_scope(project_name), project_name
+
+
+def infer_doc_type_from_path(config: Config, path: Path, frontmatter: dict[str, Any], scope: Scope) -> str:
+    existing_type = str(frontmatter.get("type") or "").strip()
+    if existing_type:
+        return existing_type
+
+    parts = [part.casefold() for part in wiki_relative_parts_for_active_document(config, path, frontmatter)]
+    filename = parts[-1] if parts else path.name.casefold()
+    raw_tags = frontmatter.get("tags") or []
+    existing_tags = raw_tags if isinstance(raw_tags, list) else [str(raw_tags)]
+    tags = {str(tag).casefold() for tag in existing_tags}
+
+    if filename == "index.md":
+        return "Index"
+    if filename == "log.md":
+        return "Log"
+    if "interviews" in parts:
+        return "Interview"
+    if "implementation-map" in parts:
+        return "ImplementationMap"
+    if "domain-model" in parts:
+        return "DomainModel"
+    if "open-questions" in parts:
+        return "OpenQuestions"
+    if "references" in parts:
+        return "Reference"
+    if "decisions" in parts or scope.path.startswith("Decisions/"):
+        return "Decision"
+    if "runbook" in filename or "runbook" in tags:
+        return "Runbook"
+    if "architecture" in filename or "architecture" in tags:
+        return "Architecture"
+    if "functional-overview" in filename or "functional" in tags:
+        return "FunctionalOverview"
+    if "technical-implementation-notes" in filename or "implementation" in tags:
+        return "ImplementationNotes"
+    if "overview" in filename or "project-overview" in tags:
+        return "Overview"
+    if "ticket" in tags or extract_ticket_ids(f"{path.name} {frontmatter.get('title') or ''}"):
+        return "Research"
+    return "Note"
+
+
+def scope_neutral_tags(tags: list[str]) -> list[str]:
+    neutral: list[str] = []
+    for tag in tags:
+        normalized = str(tag).strip()
+        if not normalized:
+            continue
+        if normalized == "wiki" or normalized.startswith("project/") or normalized.startswith("area/"):
+            continue
+        if normalized not in neutral:
+            neutral.append(normalized)
+    return neutral
+
+
+def frontmatter_changes(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    for key in sorted(set(before) | set(after)):
+        if before.get(key) != after.get(key):
+            changes.append({"key": key, "before": before.get(key), "after": after.get(key)})
+    return changes
+
+
+def render_existing_document_preserving_body(frontmatter: dict[str, Any], body: str) -> str:
+    return f"{format_frontmatter(frontmatter)}\n{body}"
+
+
+def normalize_frontmatter_for_path(
+    config: Config,
+    path: Path,
+    apply: bool = False,
+    add_missing: bool = False,
+) -> dict[str, Any]:
+    safe_path = resolve_doc_path(config, str(path))
+    if safe_path.suffix != ".md":
+        raise WikiError(f"Can only normalize Markdown documents: {safe_path.relative_to(config.vault_path)}")
+    ensure_within(wiki_root_dir(config), safe_path)
+    if not safe_path.exists():
+        raise WikiError(f"Document does not exist: {path}")
+
+    text = safe_path.read_text()
+    frontmatter, body = parse_frontmatter(text)
+    if not frontmatter and not add_missing:
+        return {
+            "path": str(safe_path.relative_to(config.vault_path)),
+            "changed": False,
+            "applied": False,
+            "skipped": True,
+            "reason": "missing_frontmatter",
+        }
+
+    before_frontmatter = dict(frontmatter)
+    active_scope, inferred_project = infer_scope_from_document_path(config, safe_path, before_frontmatter)
+    title = str(frontmatter.get("title") or safe_path.stem.replace("-", " ").title()).strip()
+    timestamp = str(frontmatter.get("updated") or frontmatter.get("created") or filesystem_timestamp(safe_path))
+    created = str(frontmatter.get("created") or timestamp)
+    updated = str(frontmatter.get("updated") or timestamp)
+    raw_tags = frontmatter.get("tags") or []
+    existing_tags = raw_tags if isinstance(raw_tags, list) else [str(raw_tags)]
+    project_for_tags = inferred_project or ""
+
+    normalized = dict(frontmatter)
+    normalized["type"] = infer_doc_type_from_path(config, safe_path, frontmatter, active_scope)
+    normalized["title"] = title
+    normalized["description"] = str(normalized.get("description") or title).strip()
+    normalized["id"] = str(normalized.get("id") or default_document_id(active_scope, title)).strip()
+    normalized["scope"] = active_scope.kind
+    normalized["scope_path"] = active_scope.path
+    normalized["created"] = created
+    normalized["updated"] = updated
+    normalized["timestamp"] = str(normalized.get("timestamp") or updated)
+    if active_scope.kind == "project":
+        normalized["project"] = inferred_project
+    else:
+        normalized.pop("project", None)
+    normalized["tags"] = normalize_scope_tags(
+        config,
+        project_for_tags,
+        active_scope,
+        scope_neutral_tags(existing_tags),
+    )
+
+    changes = frontmatter_changes(before_frontmatter, normalized)
+    rendered = render_existing_document_preserving_body(normalized, body)
+    _, rendered_body = parse_frontmatter(rendered)
+    body_sha256 = hashlib.sha256(body.encode()).hexdigest()
+    body_unchanged = rendered_body == body
+    if not body_unchanged:
+        raise WikiError(f"Refusing to normalize because body would change: {safe_path.relative_to(config.vault_path)}")
+
+    if apply and changes:
+        atomic_write(safe_path, rendered)
+        refresh_index_entry(config, safe_path)
+
+    return {
+        "path": str(safe_path.relative_to(config.vault_path)),
+        "title": title,
+        "changed": bool(changes),
+        "applied": bool(apply and changes),
+        "skipped": False,
+        "scope": active_scope.kind,
+        "scope_path": active_scope.path,
+        "body_sha256": body_sha256,
+        "body_unchanged": body_unchanged,
+        "changes": changes,
+    }
+
+
+def normalize_frontmatter_paths(
+    config: Config,
+    project_name: str,
+    scope: Scope,
+    path_arg: str | None = None,
+    global_scope: bool = False,
+    include_archived: bool = False,
+    apply: bool = False,
+    add_missing: bool = False,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    if path_arg and global_scope:
+        raise WikiError("--path and --global cannot be used together.")
+    if path_arg and limit is not None:
+        raise WikiError("--limit cannot be used with --path.")
+
+    if path_arg:
+        paths = [resolve_doc_path(config, path_arg)]
+        scope_name = "path"
+        scope_path = path_arg
+    elif global_scope:
+        root = wiki_root_dir(config)
+        paths = [
+            path
+            for path in sorted(root.rglob("*.md"))
+            if BACKUP_DIRNAME not in path.relative_to(root).parts
+            and (include_archived or ARCHIVE_DIRNAME not in path.relative_to(root).parts)
+        ]
+        scope_name = "global"
+        scope_path = None
+    else:
+        paths = markdown_paths_for_scope(config, scope, include_archived)
+        scope_name = scope.kind
+        scope_path = scope.path
+
+    if limit is not None:
+        paths = paths[:limit]
+
+    documents = [
+        normalize_frontmatter_for_path(config, path, apply=apply, add_missing=add_missing)
+        for path in paths
+    ]
+    changed_count = sum(1 for doc in documents if doc.get("changed"))
+    applied_count = sum(1 for doc in documents if doc.get("applied"))
+    skipped_count = sum(1 for doc in documents if doc.get("skipped"))
+    return {
+        "scope": scope_name,
+        "scope_path": scope_path,
+        "project": project_name if scope_name == "project" else None,
+        "apply": apply,
+        "include_archived": include_archived,
+        "add_missing": add_missing,
+        "documents": documents,
+        "document_count": len(documents),
+        "changed_count": changed_count,
+        "applied_count": applied_count,
+        "skipped_count": skipped_count,
+    }
+
+
 def parse_iso_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -1600,6 +1841,18 @@ def build_parser() -> argparse.ArgumentParser:
     frontmatter_parser.add_argument("--id", dest="document_id", help="Stable document id. Defaults to a scope/title-derived id.")
     frontmatter_parser.add_argument("--tag", action="append", dest="tags", help="Additional tag to add.")
 
+    normalize_frontmatter_parser = subparsers.add_parser(
+        "normalize-frontmatter",
+        help="Dry-run or apply OKF-compatible frontmatter normalization without changing note bodies.",
+    )
+    add_area_argument(normalize_frontmatter_parser)
+    normalize_frontmatter_parser.add_argument("--path", help="One wiki document path relative to the vault root.")
+    normalize_frontmatter_parser.add_argument("--global", dest="global_scope", action="store_true", help="Normalize all active wiki documents.")
+    normalize_frontmatter_parser.add_argument("--include-archived", action="store_true", help="Include archived documents when normalizing a scope or globally.")
+    normalize_frontmatter_parser.add_argument("--add-missing", action="store_true", help="Add generated OKF frontmatter to Markdown documents that have none.")
+    normalize_frontmatter_parser.add_argument("--apply", action="store_true", help="Write changes. Without this flag, the command only reports planned changes.")
+    normalize_frontmatter_parser.add_argument("--limit", type=int, help="Limit the number of documents processed for scoped or global dry-runs.")
+
     move_parser = subparsers.add_parser("move", help="Move one wiki note to another active wiki path for later curation workflows.")
     move_parser.add_argument("--from", dest="source", required=True, help="Source wiki document path relative to the vault root.")
     move_parser.add_argument("--to", dest="destination", required=True, help="Destination wiki document path relative to the vault root.")
@@ -1718,6 +1971,21 @@ def main() -> int:
                 args.doc_type,
                 args.description,
                 args.document_id,
+            )
+            print(json.dumps(payload, indent=2))
+            return 0
+
+        if args.command == "normalize-frontmatter":
+            payload = normalize_frontmatter_paths(
+                config,
+                project_name,
+                scope,
+                args.path,
+                args.global_scope,
+                args.include_archived,
+                args.apply,
+                args.add_missing,
+                args.limit,
             )
             print(json.dumps(payload, indent=2))
             return 0

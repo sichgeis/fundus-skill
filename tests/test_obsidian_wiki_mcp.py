@@ -207,6 +207,40 @@ class McpWrapperTest(McpWikiTestCase):
 
         self.assertIn("Wiki/Epics/AI Agent Templates/index.md", result["created"])
 
+    def test_normalize_frontmatter_wrapper_dry_run_and_apply(self) -> None:
+        note_path = self.vault_path / "Wiki" / "demo" / "legacy.md"
+        note_path.parent.mkdir(parents=True, exist_ok=True)
+        note_path.write_text(
+            "---\n"
+            "title: Legacy\n"
+            "created: 2026-01-01T00:00:00+00:00\n"
+            "updated: 2026-01-02T00:00:00+00:00\n"
+            "project: old\n"
+            "tags:\n"
+            "  - wiki\n"
+            "  - project/old\n"
+            "---\n\n"
+            "# Legacy\n\nBody\n"
+        )
+
+        dry_run = obsidian_wiki_mcp.normalize_frontmatter(
+            path="Wiki/demo/legacy.md",
+            project_root=str(self.project_root),
+        )
+        applied = obsidian_wiki_mcp.normalize_frontmatter(
+            path="Wiki/demo/legacy.md",
+            apply=True,
+            project_root=str(self.project_root),
+        )
+
+        frontmatter, body = obsidian_wiki.parse_frontmatter(note_path.read_text())
+        self.assertEqual(dry_run["changed_count"], 1)
+        self.assertEqual(dry_run["applied_count"], 0)
+        self.assertEqual(applied["applied_count"], 1)
+        self.assertEqual(frontmatter["scope_path"], "demo")
+        self.assertEqual(frontmatter["project"], "demo")
+        self.assertEqual(body, "\n# Legacy\n\nBody\n")
+
 
 if __name__ == "__main__":
     unittest.main()

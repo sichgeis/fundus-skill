@@ -618,6 +618,134 @@ class AddFrontmatterTest(WikiTestCase):
             )
 
 
+class NormalizeFrontmatterTest(WikiTestCase):
+    def write_legacy_note(self, relative_path: str, title: str = "Article", project: str = "demo") -> Path:
+        path = self.vault_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(
+                [
+                    "---",
+                    f"title: {title}",
+                    "created: 2026-01-01T00:00:00+00:00",
+                    "updated: 2026-01-02T00:00:00+00:00",
+                    f"project: {project}",
+                    "tags:",
+                    "  - wiki",
+                    f"  - project/{project}",
+                    "  - architecture",
+                    "---",
+                    "",
+                    f"# {title}",
+                    "",
+                    "Body with exact spacing.",
+                    "",
+                ]
+            )
+        )
+        return path
+
+    def test_normalize_frontmatter_dry_run_reports_changes_without_writing(self) -> None:
+        path = self.write_legacy_note("Wiki/demo/article.md")
+        original_text = path.read_text()
+
+        result = obsidian_wiki.normalize_frontmatter_paths(
+            self.config,
+            "demo",
+            obsidian_wiki.project_scope("demo"),
+            "Wiki/demo/article.md",
+        )
+
+        self.assertEqual(result["changed_count"], 1)
+        self.assertEqual(result["applied_count"], 0)
+        self.assertEqual(path.read_text(), original_text)
+        document = result["documents"][0]
+        self.assertTrue(document["body_unchanged"])
+        changed_keys = {change["key"] for change in document["changes"]}
+        self.assertIn("type", changed_keys)
+        self.assertIn("scope_path", changed_keys)
+
+    def test_normalize_frontmatter_apply_preserves_body_and_uses_path_project(self) -> None:
+        path = self.write_legacy_note(
+            "Wiki/document-extraction-services/article.md",
+            "Document Extraction Router",
+            "old-project",
+        )
+        _, original_body = obsidian_wiki.parse_frontmatter(path.read_text())
+        obsidian_wiki.rebuild_index(self.config)
+
+        result = obsidian_wiki.normalize_frontmatter_paths(
+            self.config,
+            "Hypatos",
+            obsidian_wiki.project_scope("Hypatos"),
+            "Wiki/document-extraction-services/article.md",
+            apply=True,
+        )
+
+        frontmatter, body = obsidian_wiki.parse_frontmatter(path.read_text())
+        status = obsidian_wiki.index_status(self.config)
+        self.assertEqual(result["applied_count"], 1)
+        self.assertEqual(body, original_body)
+        self.assertEqual(frontmatter["type"], "Architecture")
+        self.assertEqual(frontmatter["description"], "Document Extraction Router")
+        self.assertEqual(frontmatter["id"], "project/document-extraction-services/document-extraction-router")
+        self.assertEqual(frontmatter["scope"], "project")
+        self.assertEqual(frontmatter["scope_path"], "document-extraction-services")
+        self.assertEqual(frontmatter["project"], "document-extraction-services")
+        self.assertEqual(frontmatter["created"], "2026-01-01T00:00:00+00:00")
+        self.assertEqual(frontmatter["updated"], "2026-01-02T00:00:00+00:00")
+        self.assertEqual(frontmatter["timestamp"], "2026-01-02T00:00:00+00:00")
+        self.assertEqual(frontmatter["tags"], ["wiki", "project/document-extraction-services", "architecture"])
+        self.assertFalse(status["stale"])
+
+    def test_normalize_frontmatter_infers_area_and_removes_stale_project(self) -> None:
+        path = self.write_legacy_note(
+            "Wiki/Epics/AI Agent Templates/references/source-notes.md",
+            "Source Notes",
+            "backend-2032",
+        )
+
+        obsidian_wiki.normalize_frontmatter_paths(
+            self.config,
+            "demo",
+            obsidian_wiki.area_scope("Epics/AI Agent Templates"),
+            str(path.relative_to(self.vault_path)),
+            apply=True,
+        )
+
+        frontmatter, _ = obsidian_wiki.parse_frontmatter(path.read_text())
+        self.assertEqual(frontmatter["type"], "Reference")
+        self.assertEqual(frontmatter["scope"], "area")
+        self.assertEqual(frontmatter["scope_path"], "Epics/AI Agent Templates/references")
+        self.assertNotIn("project", frontmatter)
+        self.assertEqual(frontmatter["tags"], ["wiki", "area/epics/ai-agent-templates/references", "architecture"])
+
+    def test_normalize_frontmatter_can_add_missing_frontmatter_when_explicit(self) -> None:
+        self.path.write_text("# Plain Note\n\nBody\n")
+
+        dry_run = obsidian_wiki.normalize_frontmatter_paths(
+            self.config,
+            "demo",
+            obsidian_wiki.project_scope("demo"),
+            "Wiki/demo/article.md",
+        )
+        applied = obsidian_wiki.normalize_frontmatter_paths(
+            self.config,
+            "demo",
+            obsidian_wiki.project_scope("demo"),
+            "Wiki/demo/article.md",
+            apply=True,
+            add_missing=True,
+        )
+
+        frontmatter, body = obsidian_wiki.parse_frontmatter(self.path.read_text())
+        self.assertEqual(dry_run["skipped_count"], 1)
+        self.assertEqual(applied["applied_count"], 1)
+        self.assertEqual(frontmatter["title"], "Article")
+        self.assertEqual(frontmatter["scope_path"], "demo")
+        self.assertEqual(body, "# Plain Note\n\nBody\n")
+
+
 class BackupTest(WikiTestCase):
     def test_backup_create_list_and_inspect_manifest(self) -> None:
         result = obsidian_wiki.create_document(self.config, "demo", "Backed Up", "Body", ["ticket"])

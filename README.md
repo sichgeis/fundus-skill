@@ -131,6 +131,34 @@ python dist/obsidian-wiki/scripts/obsidian_wiki.py area init --area "Epics/AI Ag
 
 This creates `index.md`, `log.md`, `overview.md`, and standard subfolders without overwriting existing files.
 
+## Frontmatter Normalization
+
+Normalize legacy note metadata without changing note bodies:
+
+```bash
+python dist/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter --path "Wiki/my-project/old-note.md"
+```
+
+The command is a dry-run by default. It reports planned changes, body hashes, and whether the body would remain unchanged. Add `--apply` to write:
+
+```bash
+python dist/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter \
+  --path "Wiki/my-project/old-note.md" \
+  --apply
+```
+
+For curation batches, normalize a selected scope or all active wiki notes:
+
+```bash
+python dist/obsidian-wiki/scripts/obsidian_wiki.py --area "Epics/AI Agent Templates" normalize-frontmatter
+python dist/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter --global --limit 20
+python dist/obsidian-wiki/scripts/obsidian_wiki.py normalize-frontmatter --global --apply
+```
+
+Use `--include-archived` only when archived notes should be normalized too. Use `--add-missing` only when plain Markdown notes should receive generated OKF frontmatter; otherwise missing-frontmatter files are reported and skipped.
+
+Normalization infers project and area scope from the note path, not from the current working directory. This avoids accidental `scope_path` drift when running from a vault or operations folder.
+
 ## Backup
 
 Create a restorable snapshot before migration or bulk curation:

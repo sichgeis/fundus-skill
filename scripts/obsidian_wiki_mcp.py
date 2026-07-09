@@ -122,6 +122,31 @@ def add_frontmatter(
     )
 
 
+def normalize_frontmatter(
+    path: str | None = None,
+    apply: bool = False,
+    add_missing: bool = False,
+    include_archived: bool = False,
+    global_scope: bool = False,
+    limit: int | None = None,
+    project: str | None = None,
+    project_root: str | None = None,
+    area: str | None = None,
+) -> dict[str, Any]:
+    context = resolve_context(project, project_root, area)
+    return wiki.normalize_frontmatter_paths(
+        context.config,
+        context.project_name,
+        context.scope,
+        path,
+        global_scope,
+        include_archived,
+        apply,
+        add_missing,
+        limit,
+    )
+
+
 def move_note(path: str, destination: str, leave_stub: bool = False, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
     return wiki.move_document(context.config, path, destination, leave_stub)
@@ -227,6 +252,7 @@ def build_server() -> Any:
     server.tool()(create_note)
     server.tool()(update_note)
     server.tool()(add_frontmatter)
+    server.tool()(normalize_frontmatter)
     server.tool()(move_note)
     server.tool()(backup_create)
     server.tool()(backup_list)

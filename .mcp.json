@@ -1,9 +1,7 @@
 {
   "fundus": {
-    "command": "python",
-    "args": [
-      "./skills/fundus/scripts/fundus_mcp.py"
-    ],
+    "command": "./skills/fundus/scripts/fundus_mcp_launcher.sh",
+    "args": [],
     "cwd": "."
   }
 }

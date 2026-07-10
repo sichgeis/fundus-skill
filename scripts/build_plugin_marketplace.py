@@ -22,6 +22,12 @@ def main() -> int:
     if not plugin_build_dir.exists():
         print(f"plugin build directory does not exist: {plugin_build_dir}", file=sys.stderr)
         return 1
+    manifest_path = plugin_build_dir / ".codex-plugin" / "plugin.json"
+    try:
+        version = json.loads(manifest_path.read_text())["version"]
+    except (OSError, KeyError, json.JSONDecodeError) as exc:
+        print(f"cannot read plugin version from {manifest_path}: {exc}", file=sys.stderr)
+        return 1
 
     marketplace_dir.mkdir(parents=True, exist_ok=True)
     plugins_dir.mkdir(parents=True, exist_ok=True)
@@ -38,6 +44,7 @@ def main() -> int:
         "plugins": [
             {
                 "name": plugin_name,
+                "version": version,
                 "source": {
                     "source": "local",
                     "path": f"./plugins/{plugin_name}",

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +73,94 @@ class FundusTestCase(unittest.TestCase):
     def read_document_body(self, path: Path) -> str:
         _, body = fundus.parse_frontmatter(path.read_text())
         return body.strip()
+
+
+class ConfigurationResolutionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name).resolve()
+        self.project_root = self.root / "project"
+        self.project_root.mkdir()
+        self.config_home = self.root / "config"
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def environment(self, **values: str) -> dict[str, str]:
+        return {
+            "HOME": str(self.root / "home"),
+            "XDG_CONFIG_HOME": str(self.config_home),
+            **values,
+        }
+
+    def write_json(self, path: Path, payload: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload))
+
+    def test_configuration_precedence_and_provenance(self) -> None:
+        user_config = self.config_home / "fundus" / "config.json"
+        project_config = self.project_root / ".codex" / "fundus.json"
+        custom_config = self.root / "custom.json"
+        self.write_json(user_config, {"vault_path": str(self.root / "user-vault"), "fundus_dir": "UserFundus"})
+        self.write_json(project_config, {"vault_path": str(self.root / "project-vault")})
+        self.write_json(custom_config, {"vault_path": str(self.root / "custom-vault"), "fundus_dir": "CustomFundus"})
+
+        with patch.dict(
+            os.environ,
+            self.environment(
+                FUNDUS_CONFIG_PATH=str(custom_config),
+                OBSIDIAN_VAULT_PATH=str(self.root / "environment-vault"),
+            ),
+            clear=True,
+        ):
+            explicit = fundus.resolve_config(
+                self.project_root,
+                {"vault_path": str(self.root / "explicit-vault"), "fundus_dir": "ExplicitFundus"},
+            )
+            self.assertEqual(explicit.vault_path, self.root / "explicit-vault")
+            self.assertEqual(explicit.fundus_dir, "ExplicitFundus")
+            self.assertEqual(explicit.provenance["vault_path"], "explicit operation argument")
+
+            compatible = fundus.resolve_config(self.project_root)
+            self.assertEqual(compatible.vault_path, self.root / "environment-vault")
+            self.assertEqual(compatible.fundus_dir, "CustomFundus")
+            self.assertEqual(compatible.provenance["vault_path"], "OBSIDIAN_VAULT_PATH")
+
+            del os.environ["OBSIDIAN_VAULT_PATH"]
+            custom = fundus.resolve_config(self.project_root)
+            self.assertEqual(custom.vault_path, self.root / "custom-vault")
+            self.assertTrue(custom.provenance["vault_path"].startswith("FUNDUS_CONFIG_PATH:"))
+
+            del os.environ["FUNDUS_CONFIG_PATH"]
+            project = fundus.resolve_config(self.project_root)
+            self.assertEqual(project.vault_path, self.root / "project-vault")
+            self.assertEqual(project.fundus_dir, "UserFundus")
+            self.assertTrue(project.provenance["vault_path"].startswith("project config:"))
+            self.assertTrue(project.provenance["fundus_dir"].startswith("user config:"))
+
+    def test_user_config_supports_new_machine_doctor(self) -> None:
+        vault = self.root / "new-vault"
+        vault.mkdir()
+        self.write_json(
+            self.config_home / "fundus" / "config.json",
+            {"vault_path": str(vault), "fundus_dir": "Knowledge"},
+        )
+
+        with patch.dict(os.environ, self.environment(), clear=True):
+            config = fundus.resolve_config(self.project_root)
+            report = fundus.doctor_report(config, self.project_root, "demo")
+
+        self.assertEqual(report["fundus_root"], str(vault / "Knowledge"))
+        self.assertTrue(report["config_provenance"]["vault_path"].startswith("user config:"))
+        self.assertEqual(report["python_executable"], sys.executable)
+        self.assertTrue(report["config_sources"])
+
+    def test_missing_vault_configuration_is_actionable(self) -> None:
+        with patch.dict(os.environ, self.environment(), clear=True):
+            with self.assertRaises(fundus.FundusError) as raised:
+                fundus.resolve_config(self.project_root)
+
+        self.assertEqual(raised.exception.code, "CONFIG_MISSING")
 
 
 class FrontmatterCodecTest(FundusTestCase):

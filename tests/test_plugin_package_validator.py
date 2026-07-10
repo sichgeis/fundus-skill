@@ -23,9 +23,16 @@ class PluginPackageValidatorTest(unittest.TestCase):
         self.plugin_root = Path(self.temp_dir.name) / "fundus-plugin"
         (self.plugin_root / ".codex-plugin").mkdir(parents=True)
         (self.plugin_root / "skills" / "fundus" / "scripts").mkdir(parents=True)
+        (self.plugin_root / "skills" / "fundus" / "vendor" / "ruamel_yaml-0.19.1.dist-info" / "licenses").mkdir(parents=True)
         (self.plugin_root / "skills" / "fundus" / "SKILL.md").write_text("# Fundus\n")
         (self.plugin_root / "skills" / "fundus" / "scripts" / "fundus.py").write_text("")
         (self.plugin_root / "skills" / "fundus" / "scripts" / "fundus_mcp.py").write_text("")
+        launcher = self.plugin_root / "skills" / "fundus" / "scripts" / "fundus_mcp_launcher.sh"
+        launcher.write_text("#!/bin/sh\n")
+        launcher.chmod(0o755)
+        (self.plugin_root / "skills" / "fundus" / "vendor" / "ruamel_yaml-0.19.1.dist-info" / "licenses" / "LICENSE").write_text("MIT\n")
+        (self.plugin_root / "LICENSE").write_text("MIT\n")
+        (self.plugin_root / "THIRD_PARTY_LICENSES.md").write_text("# Third-party licenses\n")
         (self.plugin_root / ".codex-plugin" / "plugin.json").write_text(
             json.dumps(
                 {
@@ -56,8 +63,8 @@ class PluginPackageValidatorTest(unittest.TestCase):
     def server_config() -> dict:
         return {
             "fundus": {
-                "command": "python",
-                "args": ["./skills/fundus/scripts/fundus_mcp.py"],
+                "command": "./skills/fundus/scripts/fundus_mcp_launcher.sh",
+                "args": [],
                 "cwd": ".",
             }
         }
@@ -82,6 +89,16 @@ class PluginPackageValidatorTest(unittest.TestCase):
 
         self.assertIn("mcp config uses unsupported camel-case mcpServers wrapper", errors)
         self.assertIn("mcp config missing fundus server", errors)
+
+    def test_rejects_personal_path_in_distributable_artifact(self) -> None:
+        self.write_mcp(self.server_config())
+        (self.plugin_root / "skills" / "fundus" / "config.json").write_text(
+            '{"vault_path":"/Users/christian/vault/private"}\n'
+        )
+
+        errors = validator.validate_plugin(self.plugin_root)
+
+        self.assertTrue(any("personal path marker" in error for error in errors))
 
 
 if __name__ == "__main__":

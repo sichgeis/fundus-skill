@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ REQUIRED_INTERFACE_FIELDS = [
     "defaultPrompt",
     "brandColor",
 ]
+PERSONAL_PATH_MARKERS = ("/Users/christian", "\\Users\\christian")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -46,12 +48,25 @@ def mcp_server_map(mcp: dict[str, Any], errors: list[str]) -> dict[str, Any]:
     return mcp
 
 
+def scan_personal_paths(plugin_root: Path, errors: list[str]) -> None:
+    for path in sorted(candidate for candidate in plugin_root.rglob("*") if candidate.is_file()):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for marker in PERSONAL_PATH_MARKERS:
+            if marker in content:
+                errors.append(f"artifact contains personal path marker {marker!r} in {path.relative_to(plugin_root)}")
+
+
 def validate_plugin(plugin_root: Path) -> list[str]:
     errors: list[str] = []
     manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
     mcp_path = plugin_root / ".mcp.json"
     require(manifest_path.exists(), "missing .codex-plugin/plugin.json", errors)
     require(mcp_path.exists(), "missing .mcp.json", errors)
+    require((plugin_root / "LICENSE").exists(), "missing declared LICENSE", errors)
+    require((plugin_root / "THIRD_PARTY_LICENSES.md").exists(), "missing third-party license inventory", errors)
     if not manifest_path.exists():
         return errors
 
@@ -76,13 +91,26 @@ def validate_plugin(plugin_root: Path) -> list[str]:
         raw_server = servers.get("fundus") or {}
         require(isinstance(raw_server, dict), "fundus MCP server config must be an object", errors)
         server = raw_server if isinstance(raw_server, dict) else {}
-        require(server.get("command") in {"python", "python3"}, "fundus MCP command should be python or python3", errors)
-        require("./skills/fundus/scripts/fundus_mcp.py" in (server.get("args") or []), "fundus MCP args should launch packaged server", errors)
+        require(
+            server.get("command") == "./skills/fundus/scripts/fundus_mcp_launcher.sh",
+            "fundus MCP command should use the packaged portable launcher",
+            errors,
+        )
+        require(server.get("args") == [], "fundus MCP launcher args should be empty", errors)
         require(server.get("cwd") == ".", "fundus MCP cwd should be the plugin root", errors)
 
     require((plugin_root / "skills" / "fundus" / "SKILL.md").exists(), "missing packaged skill", errors)
     require((plugin_root / "skills" / "fundus" / "scripts" / "fundus.py").exists(), "missing packaged helper", errors)
     require((plugin_root / "skills" / "fundus" / "scripts" / "fundus_mcp.py").exists(), "missing packaged MCP server", errors)
+    launcher_path = plugin_root / "skills" / "fundus" / "scripts" / "fundus_mcp_launcher.sh"
+    require(launcher_path.exists(), "missing packaged MCP launcher", errors)
+    require(launcher_path.exists() and os.access(launcher_path, os.X_OK), "packaged MCP launcher is not executable", errors)
+    require(
+        (plugin_root / "skills" / "fundus" / "vendor" / "ruamel_yaml-0.19.1.dist-info" / "licenses" / "LICENSE").exists(),
+        "missing vendored ruamel.yaml license",
+        errors,
+    )
+    scan_personal_paths(plugin_root, errors)
     return errors
 
 

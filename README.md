@@ -14,11 +14,11 @@ Proposal-first create/update detects duplicate titles, IDs, aliases, ticket keys
 
 ## Current Direction
 
-Fundus is being refined into Christian's personal Codex workbench for durable work knowledge. The workbench should stay explicit: use it to search, save, retrieve, update, and curate Fundus knowledge. During ticket or research work, Codex may also do a read-only Fundus lookup when prior context is likely useful.
+Fundus is Christian's personal-first Codex workbench for durable work knowledge. It is portable but is not currently published as a public marketplace product: distributable artifacts contain no owner-specific vault path, and every installation must choose its own local vault. The workbench stays explicit: use it to search, save, retrieve, update, and curate Fundus knowledge. During ticket or research work, Codex may also do a read-only Fundus lookup when prior context is likely useful.
 
 Fundus is evidence, not authority. Source code remains the source of truth for implemented behavior; Fundus helps discover business ideas, technical concepts, prior decisions, and discussion history. When Fundus appears stale, Codex should propose a concise correction instead of silently rewriting it, unless the user explicitly asks to propagate new learning into Fundus.
 
-The canonical live corpus is `/Users/christian/vault/Hypatos/Fundus`. The old `Wiki/` source was migrated on 2026-07-09, verified, backed up, and retired as `/Users/christian/vault/Hypatos/Wiki.migrated-20260709T182817+0200-wiki-to-fundus-resume`.
+Christian's current canonical corpus is `/Users/christian/vault/Hypatos/Fundus`. That source-only operational fact is deliberately absent from the built plugin. The old `Wiki/` source was migrated on 2026-07-09, verified, backed up, and retired; migration now remains only as a recovery workflow.
 
 ## Layout
 
@@ -60,6 +60,23 @@ dist/fundus
 
 That package is the runtime payload used by the plugin. Use `task build:plugin` for `dist/fundus-plugin` and `task plugin:refresh` for the generated local marketplace at `dist/fundus-marketplace`.
 
+## First-time configuration
+
+Fundus needs Python 3 and a local Obsidian vault. Create the portable user configuration before first use:
+
+```bash
+mkdir -p ~/.config/fundus
+cp config.example.json ~/.config/fundus/config.json
+```
+
+Edit `vault_path` in `~/.config/fundus/config.json`, then validate resolution without writing any notes:
+
+```bash
+python3 scripts/fundus.py doctor
+```
+
+`XDG_CONFIG_HOME` is respected. A project may instead provide `.codex/fundus.json`, and automation may point `FUNDUS_CONFIG_PATH` at an explicit JSON file. See [Configuration](#configuration) for precedence and one-operation overrides.
+
 ## Install
 
 Install or refresh the local Codex plugin:
@@ -95,8 +112,8 @@ The plugin includes a local stdio MCP server. Codex reads `.mcp.json` from the i
 ```json
 {
   "fundus": {
-    "command": "python",
-    "args": ["./skills/fundus/scripts/fundus_mcp.py"],
+    "command": "./skills/fundus/scripts/fundus_mcp_launcher.sh",
+    "args": [],
     "cwd": "."
   }
 }
@@ -104,7 +121,7 @@ The plugin includes a local stdio MCP server. Codex reads `.mcp.json` from the i
 
 The direct server map is one of the shapes documented for bundled Codex MCP servers. The server uses newline-delimited UTF-8 JSON-RPC on stdio, negotiates `2025-11-25` or `2025-06-18`, and requires the MCP initialization lifecycle before normal tool operations. Recoverable protocol and tool errors do not terminate the process.
 
-The server is self-contained and uses the Python standard library, the bundled Fundus helper, and the vendored `ruamel.yaml` runtime. Check the built server with:
+The launcher prefers `python3` and falls back to `python`, while the server itself requires Python 3. The server is self-contained and uses the Python standard library, the bundled Fundus helper, and the vendored `ruamel.yaml` runtime. Check the built server with:
 
 ```bash
 python dist/fundus/scripts/fundus_mcp.py --check
@@ -280,7 +297,7 @@ Codex has two separate gates:
 - Command approval: whether the proposed command is trusted.
 - Filesystem sandboxing: whether the command may write outside the active workspace.
 
-Because the default vault is `/Users/christian/vault/Hypatos`, normal Fundus writes usually happen outside repository workspaces. In `workspace-write` sessions, write-like MCP calls or CLI helper commands need escalated sandbox permissions unless the vault was added as a writable root.
+Because a configured vault usually sits outside repository workspaces, write-like MCP calls or CLI helper commands may need escalated sandbox permissions in `workspace-write` sessions unless the vault was added as a writable root.
 
 If MCP tools are unavailable and Codex must use the CLI helper, run the helper from the repository build or from the installed plugin cache path shown by `codex plugin add` / `codex plugin list`. Plugin cache paths include the installed version, for example:
 
@@ -304,7 +321,7 @@ python dist/fundus/scripts/fundus.py update \
   --content-file /private/tmp/fundus-update.md
 ```
 
-Avoid wrapping Fundus writes in shell-heavy commands such as here-docs, `$'...'` strings, command substitutions, redirections, or long `/bin/zsh -lc ...` payloads. Those forms can fall outside Codex's conservative command-prefix matching even though the underlying Python script is allowlisted. If Codex is launched with `--add-dir /Users/christian/vault/Hypatos`, the vault is part of the writable sandbox and write commands may not need escalation.
+Avoid wrapping Fundus writes in shell-heavy commands such as here-docs, `$'...'` strings, command substitutions, redirections, or long `/bin/zsh -lc ...` payloads. Those forms can fall outside Codex's conservative command-prefix matching even though the underlying Python script is allowlisted. If Codex is launched with `--add-dir /path/to/vault`, the vault is part of the writable sandbox and write commands may not need escalation.
 
 Good allowlisted write shape:
 
@@ -404,17 +421,29 @@ python dist/fundus/scripts/fundus_mcp.py --help
 
 Configuration resolves in this order:
 
-1. `OBSIDIAN_VAULT_PATH`
-2. project-local `.codex/fundus.json`
-3. packaged skill-local `config.json` inside the installed plugin
+1. explicit CLI `--vault-path` / `--fundus-dir` arguments where supported
+2. `OBSIDIAN_VAULT_PATH` for compatibility
+3. the JSON file named by `FUNDUS_CONFIG_PATH`
+4. project-local `.codex/fundus.json`
+5. `${XDG_CONFIG_HOME:-~/.config}/fundus/config.json`
+6. portable packaged and built-in defaults
 
-Default configuration targets:
+The portable defaults choose only the Fundus directory name and redaction policy; they do not choose a vault. A minimal user or project configuration is:
 
-```text
-/Users/christian/vault/Hypatos/Fundus
+```json
+{
+  "vault_path": "/path/to/your/obsidian/vault",
+  "fundus_dir": "Fundus"
+}
 ```
 
-The old `Wiki/` tree has been migrated and retired. Treat `Fundus/` as the single live work knowledge root.
+`doctor` reports the source selected for every resolved value, the Python executable, plugin root, path policy, index state, and lock state without exposing configuration contents beyond resolved paths. `OBSIDIAN_VAULT_PATH` remains supported for existing installations.
+
+The old `Wiki/` tree has been migrated and retired in the primary personal installation. Treat the configured `fundus_dir` as the single live work knowledge root.
+
+## License
+
+Fundus is licensed under the MIT License. The vendored `ruamel.yaml` 0.19.1 dependency is also MIT-licensed; see `THIRD_PARTY_LICENSES.md` and the retained upstream license under `vendor/`.
 
 ## Update Workflow
 

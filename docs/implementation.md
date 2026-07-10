@@ -93,12 +93,14 @@ The legacy `Wiki/` source was migrated and retired on 2026-07-09. Migration and 
 
 Current precedence is:
 
-1. `OBSIDIAN_VAULT_PATH`,
-2. project `.codex/fundus.json`,
-3. packaged `config.json`,
-4. built-in defaults.
+1. explicit CLI operation arguments where supported,
+2. `OBSIDIAN_VAULT_PATH` compatibility,
+3. `FUNDUS_CONFIG_PATH`,
+4. project `.codex/fundus.json`,
+5. `${XDG_CONFIG_HOME:-~/.config}/fundus/config.json`,
+6. portable packaged and built-in defaults.
 
-The packaged `config.json` currently contains Christian's absolute vault path. This is accepted as a current local implementation fact but is a portability gap.
+The packaged `config.json` contains no vault path. A caller must select a vault through one of the higher-precedence sources. `doctor` reports provenance per resolved value plus the Python executable and runtime/plugin root.
 
 ### Current search
 
@@ -183,14 +185,14 @@ The current `.mcp.json` uses the documented direct server-map shape:
 ```json
 {
   "fundus": {
-    "command": "python",
-    "args": ["./skills/fundus/scripts/fundus_mcp.py"],
+    "command": "./skills/fundus/scripts/fundus_mcp_launcher.sh",
+    "args": [],
     "cwd": "."
   }
 }
 ```
 
-Current Codex plugin documentation accepts a direct server map or a wrapped `mcp_servers` object. The repository validator accepts those documented shapes and rejects the old camel-case wrapper.
+The POSIX launcher prefers `python3` and falls back to `python`; integration tests exercise environments where each command is the only interpreter name. Current Codex plugin documentation accepts a direct server map or a wrapped `mcp_servers` object. The repository validator accepts those documented shapes, checks launcher executability, licenses, and personal-path absence, and rejects the old camel-case wrapper.
 
 ### Current path behavior
 
@@ -548,11 +550,11 @@ Use a documented Codex shape, preferably a direct server map:
 }
 ```
 
-If interpreter portability requires a launcher, package and test the launcher instead of assuming both `python` and `python3` exist.
+The packaged launcher selects `python3` and falls back to `python`, and is tested with each command as the only interpreter name.
 
 The custom package validator validates the documented direct and `mcp_servers` shapes and rejects the old repository-specific camel-case wrapper.
 
-## Target configuration
+## Configuration contract
 
 Configuration source precedence:
 
@@ -565,9 +567,9 @@ user ~/.config/fundus/config.json
 non-personal built-in defaults
 ```
 
-`config.example.json` remains portable.
+`config.example.json` remains portable, while package-local `config.json` provides only non-personal defaults.
 
-Package build must fail if a known personal path appears in distributable files.
+Package validation fails if a known personal path appears in distributable files. The plugin manifest is the release-version source; the MCP server discovers that manifest at runtime and the marketplace builder copies its value into marketplace metadata.
 
 ## Tool-surface migration
 

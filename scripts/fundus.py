@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -89,6 +89,7 @@ class Config:
     default_tags: list[str]
     redaction_enabled: bool
     redaction_patterns: list[str]
+    provenance: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -250,20 +251,52 @@ def project_config_paths(project_root: Path) -> list[Path]:
     return [project_root / config_path for config_path in PROJECT_CONFIG_RELATIVE_PATHS]
 
 
-def resolve_config(project_root: Path) -> Config:
-    merged: dict[str, Any] = deep_merge(DEFAULT_CONFIG, load_json(SKILL_CONFIG_PATH))
+def user_config_path() -> Path:
+    config_home = os.getenv("XDG_CONFIG_HOME")
+    base = Path(config_home).expanduser() if config_home else Path(os.path.expanduser("~/.config"))
+    return base / "fundus" / "config.json"
+
+
+def resolve_config(project_root: Path, explicit_overrides: dict[str, Any] | None = None) -> Config:
+    merged: dict[str, Any] = dict(DEFAULT_CONFIG)
+    provenance = {
+        "fundus_dir": "built-in default",
+        "default_tags": "built-in default",
+        "redaction": "built-in default",
+    }
+
+    def merge_source(data: dict[str, Any], source: str) -> None:
+        nonlocal merged
+        if not data:
+            return
+        merged = deep_merge(merged, data)
+        for key in data:
+            provenance[key] = source
+
+    merge_source(load_json(SKILL_CONFIG_PATH), f"packaged config: {SKILL_CONFIG_PATH}")
+    user_path = user_config_path()
+    merge_source(load_json(user_path), f"user config: {user_path}")
     for config_path in reversed(project_config_paths(project_root)):
-        merged = deep_merge(merged, load_json(config_path))
+        merge_source(load_json(config_path), f"project config: {config_path}")
+
+    explicit_config_path = os.getenv("FUNDUS_CONFIG_PATH")
+    if explicit_config_path:
+        custom_path = Path(explicit_config_path).expanduser().resolve()
+        if not custom_path.is_file():
+            raise FundusError(f"FUNDUS_CONFIG_PATH does not exist: {custom_path}", "CONFIG_FILE_NOT_FOUND")
+        merge_source(load_json(custom_path), f"FUNDUS_CONFIG_PATH: {custom_path}")
 
     env_vault = os.getenv("OBSIDIAN_VAULT_PATH")
     if env_vault:
-        merged["vault_path"] = env_vault
+        merge_source({"vault_path": env_vault}, "OBSIDIAN_VAULT_PATH")
+    merge_source(explicit_overrides or {}, "explicit operation argument")
 
     vault_path = merged.get("vault_path")
     if not vault_path:
         raise FundusError(
-            "Missing vault_path. Set OBSIDIAN_VAULT_PATH, add it to "
-            ".codex/fundus.json, or add it to the skill config."
+            "Missing vault_path. Set an explicit --vault-path, OBSIDIAN_VAULT_PATH, FUNDUS_CONFIG_PATH, "
+            "project .codex/fundus.json, or user ~/.config/fundus/config.json.",
+            "CONFIG_MISSING",
         )
 
     fundus_dir = merged.get("fundus_dir") or DEFAULT_CONFIG["fundus_dir"]
@@ -276,6 +309,12 @@ def resolve_config(project_root: Path) -> Config:
         default_tags=list(default_tags),
         redaction_enabled=bool(redaction.get("enabled", True)),
         redaction_patterns=list(redaction.get("patterns") or DEFAULT_CONFIG["redaction"]["patterns"]),
+        provenance={
+            "vault_path": provenance.get("vault_path", "missing"),
+            "fundus_dir": provenance.get("fundus_dir", "built-in default"),
+            "default_tags": provenance.get("default_tags", "built-in default"),
+            "redaction": provenance.get("redaction", "built-in default"),
+        },
     )
 
 
@@ -3268,6 +3307,7 @@ def config_with_fundus_dir(config: Config, fundus_dir: str) -> Config:
         default_tags=config.default_tags,
         redaction_enabled=config.redaction_enabled,
         redaction_patterns=config.redaction_patterns,
+        provenance={**config.provenance, "fundus_dir": "explicit operation argument"},
     )
 
 
@@ -3697,11 +3737,7 @@ def doctor_report(config: Config, project_root: Path, project_name: str) -> dict
 def doctor_report_for_scope(config: Config, project_root: Path, project_name: str, scope: Scope) -> dict[str, Any]:
     root = fundus_root_dir(config)
     scope_dir = fundus_scope_dir(config, scope)
-    config_sources = [str(path) for path in project_config_paths(project_root) if path.exists()]
-    if SKILL_CONFIG_PATH.exists():
-        config_sources.append(str(SKILL_CONFIG_PATH))
-    if os.getenv("OBSIDIAN_VAULT_PATH"):
-        config_sources.append("OBSIDIAN_VAULT_PATH")
+    config_sources = sorted(set(config.provenance.values()))
 
     return {
         "project_root": str(project_root),
@@ -3715,9 +3751,12 @@ def doctor_report_for_scope(config: Config, project_root: Path, project_name: st
             "allowed_area_roots": sorted(AREA_ROOT_DIRNAMES),
         },
         "config_sources": config_sources,
+        "config_provenance": dict(config.provenance),
         "vault_path": str(config.vault_path),
         "fundus_dir": config.fundus_dir,
         "fundus_root": str(root),
+        "python_executable": sys.executable,
+        "plugin_root": str(SKILL_DIR.parent.parent if (SKILL_DIR.parent.parent / ".codex-plugin").exists() else SKILL_DIR),
         "fundus_root_exists": root.exists(),
         "scope_fundus_dir": str(scope_dir),
         "scope_fundus_exists": scope_dir.exists(),
@@ -3747,6 +3786,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage persistent Fundus documents for the active project.")
     parser.add_argument("--project", help="Override the auto-detected project name.")
     parser.add_argument("--area", help="Target an explicit Fundus area path under the Fundus root.")
+    parser.add_argument("--vault-path", help="Override the configured Obsidian vault path for this operation.")
+    parser.add_argument("--fundus-dir", help="Override the configured Fundus directory for this operation.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     scan_parser = subparsers.add_parser("scan", help="List Fundus documents for the active project.")
@@ -3932,7 +3973,15 @@ def main() -> int:
 
     try:
         project_root = discover_project_root()
-        config = resolve_config(project_root)
+        explicit_config = {
+            key: value
+            for key, value in {
+                "vault_path": args.vault_path,
+                "fundus_dir": args.fundus_dir,
+            }.items()
+            if value is not None
+        }
+        config = resolve_config(project_root, explicit_config)
         project_name = args.project or detect_project_name(project_root)
         area_arg = getattr(args, "area", None)
         if args.project and area_arg:

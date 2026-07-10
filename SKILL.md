@@ -57,8 +57,8 @@ Do not use Fundus when the user opts out, when the content is casual/non-work kn
 
 ## Migration And Maintenance
 
-- Canonical Fundus is `/Users/christian/vault/Hypatos/Fundus`.
-- The legacy `Wiki/` corpus was migrated on 2026-07-09 and retired as `/Users/christian/vault/Hypatos/Wiki.migrated-20260709T182817+0200-wiki-to-fundus-resume`.
+- Canonical Fundus is the configured `{vault_path}/{fundus_dir}` directory.
+- Legacy `Wiki/` migration is a recovery workflow, not a second live source. Retire or explicitly quarantine the source after a verified migration.
 - Use `migrate wiki-to-fundus --dry-run`, then `--apply`, then `--verify` only for recovery or deliberate re-run workflows.
 - Migration must back up the source, stage the transformed destination, clean reserved `index.md` and `log.md` frontmatter, preserve archives under `Fundus/_archive/`, rebuild the index, verify, and retire old `Wiki/` as a live source unless explicitly kept.
 - Create backups before migration, curation, or bulk path changes.

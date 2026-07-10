@@ -110,7 +110,7 @@ The P11 transport, lifecycle, package-shape, error-recovery, and independent-cli
 | P16 — Canonical scope and move semantics | done | high | P12, P15 |
 | P17 — Explicit operation and MCP tool contracts | done | high | P11 |
 | P18 — Proposal/apply, duplicates, and provenance | done | high | P14, P17 |
-| P19 — Configuration, portability, and packaging | ready | high | P11 |
+| P19 — Configuration, portability, and packaging | done | high | P11 |
 | P20 — Modularization, CI, and release readiness | planned | medium | P13-P19 |
 
 Parallel work is allowed only when branches do not change the same contracts. P11, P12, P15, and part of P19 are conceptually parallel, but a single agent should complete P11 first.
@@ -898,7 +898,7 @@ Next phase:
 
 ## P19 — Configuration, portability, and packaging
 
-Status: ready
+Status: done
 
 ### Goal
 
@@ -906,30 +906,75 @@ Remove machine-specific assumptions and make a built plugin reproducible on anot
 
 ### Required implementation
 
-- [ ] Remove personal vault path from distributable config.
-- [ ] Add user-level configuration.
-- [ ] Add `FUNDUS_CONFIG_PATH`.
-- [ ] Report configuration provenance in doctor.
-- [ ] Preserve `OBSIDIAN_VAULT_PATH` compatibility.
-- [ ] Resolve the `python` versus `python3` launcher mismatch.
-- [ ] Test environments with only one interpreter command.
-- [ ] Add an artifact scan for personal paths.
-- [ ] Establish one version source.
-- [ ] Synchronize manifest, MCP server info, and marketplace metadata.
-- [ ] Add the license file declared by the manifest.
-- [ ] Review dependency licenses.
-- [ ] Add first-install/setup documentation.
-- [ ] Clarify personal-first versus public distribution in README.
-- [ ] Update privacy and terms links only if publication intent requires owner-specific documents.
+- [x] Remove personal vault path from distributable config.
+- [x] Add user-level configuration.
+- [x] Add `FUNDUS_CONFIG_PATH`.
+- [x] Report configuration provenance in doctor.
+- [x] Preserve `OBSIDIAN_VAULT_PATH` compatibility.
+- [x] Resolve the `python` versus `python3` launcher mismatch.
+- [x] Test environments with only one interpreter command.
+- [x] Add an artifact scan for personal paths.
+- [x] Establish one version source.
+- [x] Synchronize manifest, MCP server info, and marketplace metadata.
+- [x] Add the license file declared by the manifest.
+- [x] Review dependency licenses.
+- [x] Add first-install/setup documentation.
+- [x] Clarify personal-first versus public distribution in README.
+- [x] Update privacy and terms links only if publication intent requires owner-specific documents; no owner-specific publication documents were added because this remains a local, unpublished plugin.
 
 ### Acceptance criteria
 
-- [ ] Built plugin contains no known personal path.
-- [ ] New-machine temporary setup can resolve config and run doctor.
-- [ ] Packaged launcher works on supported interpreter layouts.
-- [ ] Versions agree.
-- [ ] Declared license exists.
-- [ ] `task verify` passes.
+- [x] Built plugin contains no known personal path.
+- [x] New-machine temporary setup can resolve config and run doctor.
+- [x] Packaged launcher works on supported interpreter layouts.
+- [x] Versions agree.
+- [x] Declared license exists.
+- [x] `task verify` passes.
+
+### Completion evidence — 2026-07-10
+
+Files changed:
+
+- `config.json`, `.mcp.json`
+- `scripts/fundus.py`, `scripts/fundus_mcp.py`, `scripts/fundus_mcp_launcher.sh`
+- `scripts/build_plugin_marketplace.py`, `scripts/validate_plugin_package.py`, `scripts/verify_release_consistency.py`
+- `Taskfile.yml`, `LICENSE`, `THIRD_PARTY_LICENSES.md`
+- configuration, launcher, package-validator, and packaged-integration tests
+- `README.md`, `SKILL.md`, and installed reference/implementation documentation
+
+Commands and results:
+
+```text
+python3 -m unittest tests.test_fundus.ConfigurationResolutionTest tests.test_plugin_package_validator tests.test_fundus_mcp_integration.PortableLauncherTest -v
+# 9 tests passed
+
+python3 -m unittest discover -s tests
+# 128 tests passed; one expected package-only skip
+
+task verify
+# package validator and personal-path scan passed
+# version consistency passed at 0.1.0 for source, build, marketplace metadata, and marketplace copy
+# exact packaged launcher integration and both one-interpreter layouts passed
+# full suite 128 tests passed; one expected package-only skip
+
+git diff --check
+# passed
+```
+
+Implemented evidence:
+
+- Configuration precedence is explicit operation arguments, `OBSIDIAN_VAULT_PATH`, `FUNDUS_CONFIG_PATH`, project config, XDG-aware user config, then non-personal package/built-in defaults. A missing vault fails with `CONFIG_MISSING`.
+- `doctor` reports provenance per resolved configuration value along with Python and runtime/plugin roots. A fresh temporary machine setup resolves through user config and runs doctor without a corpus write.
+- The packaged POSIX launcher prefers `python3`, falls back to `python`, and was exercised with each name as the only command on `PATH`.
+- The plugin validator rejects known personal path markers, a missing/non-executable launcher, missing declared/dependency licenses, and invalid package configuration.
+- `.codex-plugin/plugin.json` is the version source. Packaged MCP discovers it at runtime and marketplace generation copies it into metadata; a release consistency gate checks all copies.
+- Root MIT licensing and the vendored `ruamel.yaml` 0.19.1 MIT license inventory are included in both direct-skill and plugin artifacts.
+- First-install documentation distinguishes the personal-first current use from portable, not-yet-public distribution. No public privacy/terms ownership claim was introduced.
+- All tests used temporary vaults; no live corpus operation was run.
+
+Next phase:
+
+- P20 — Modularization, CI, and release readiness is ready.
 
 ---
 

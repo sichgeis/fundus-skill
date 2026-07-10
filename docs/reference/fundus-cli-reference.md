@@ -8,6 +8,19 @@ The installed plugin lists `search`, `read`, `propose_create`, `apply_create`, `
 
 MCP successes return both text JSON and schema-validated `structuredContent`. Tool failures return `isError: true` plus structured `error` and stable `code` fields.
 
+## Configuration and doctor
+
+Fundus resolves configuration from highest to lowest precedence: explicit global CLI `--vault-path` / `--fundus-dir`, compatibility `OBSIDIAN_VAULT_PATH`, `FUNDUS_CONFIG_PATH`, project `.codex/fundus.json`, `${XDG_CONFIG_HOME:-~/.config}/fundus/config.json`, then portable defaults. A vault path is required; package defaults never select a personal vault.
+
+```bash
+python /path/to/fundus/scripts/fundus.py \
+  --vault-path /path/to/vault \
+  --fundus-dir Fundus \
+  doctor
+```
+
+`doctor` is read-only and reports configuration provenance for every value, the resolved roots, Python executable, plugin/runtime root, path policy, index state, and lock state. `FUNDUS_CONFIG_PATH` must name a JSON file with the same shape as `config.example.json`.
+
 ## Common Search And Read
 
 ```bash

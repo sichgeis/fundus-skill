@@ -164,6 +164,30 @@ class SourceMcpIntegrationTest(unittest.TestCase, McpProcessIntegrationMixin):
         self.assertEqual(evidence["protocol_version"], "2025-11-25")
 
 
+class PortableLauncherTest(unittest.TestCase):
+    def run_with_only(self, interpreter_name: str) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bin_dir = Path(temp_dir) / "bin"
+            bin_dir.mkdir()
+            (bin_dir / interpreter_name).symlink_to(sys.executable)
+            result = subprocess.run(
+                [str(ROOT / "scripts" / "fundus_mcp_launcher.sh"), "--check"],
+                cwd=ROOT,
+                env={"PATH": str(bin_dir), "PYTHONDONTWRITEBYTECODE": "1"},
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+    def test_launcher_works_with_only_python3_command(self) -> None:
+        self.assertTrue(self.run_with_only("python3")["ok"])
+
+    def test_launcher_works_with_only_python_command(self) -> None:
+        self.assertTrue(self.run_with_only("python")["ok"])
+
+
 class PackagedMcpIntegrationTest(unittest.TestCase, McpProcessIntegrationMixin):
     def test_exact_packaged_command_completes_independent_client_flow(self) -> None:
         configured_root = os.environ.get("FUNDUS_PLUGIN_ROOT")

@@ -6,7 +6,7 @@ vars:
   LEGACY_SKILL_SUFFIX: wiki
   RETIRED_PROMPT_NAME: document.md
   PYTHON:
-    sh: command -v python || command -v python3
+    sh: command -v python3 || command -v python
   HOME_DIR:
     sh: printf %s "$HOME"
   BUILD_ROOT: dist
@@ -28,8 +28,8 @@ tasks:
       - mkdir -p "{{.BUILD_DIR}}/scripts"
       - mkdir -p "{{.BUILD_DIR}}/agents"
       - mkdir -p "{{.BUILD_DIR}}/docs/reference"
-      - cp SKILL.md config.json requirements.txt "{{.BUILD_DIR}}/"
-      - cp scripts/fundus.py scripts/fundus_mcp.py "{{.BUILD_DIR}}/scripts/"
+      - cp SKILL.md config.json requirements.txt LICENSE THIRD_PARTY_LICENSES.md "{{.BUILD_DIR}}/"
+      - cp scripts/fundus.py scripts/fundus_mcp.py scripts/fundus_mcp_launcher.sh "{{.BUILD_DIR}}/scripts/"
       - cp -R vendor "{{.BUILD_DIR}}/vendor"
       - cp agents/openai.yaml "{{.BUILD_DIR}}/agents/openai.yaml"
       - cp docs/reference/*.md "{{.BUILD_DIR}}/docs/reference/"
@@ -44,6 +44,7 @@ tasks:
       - mkdir -p "{{.PLUGIN_BUILD_DIR}}/skills"
       - cp .codex-plugin/plugin.json "{{.PLUGIN_BUILD_DIR}}/.codex-plugin/plugin.json"
       - cp .mcp.json "{{.PLUGIN_BUILD_DIR}}/.mcp.json"
+      - cp LICENSE THIRD_PARTY_LICENSES.md "{{.PLUGIN_BUILD_DIR}}/"
       - cp -R "{{.BUILD_DIR}}" "{{.PLUGIN_BUILD_DIR}}/skills/{{.SKILL_NAME}}"
 
   build:plugin-marketplace:
@@ -126,15 +127,20 @@ tasks:
       - test -f "{{.BUILD_DIR}}/SKILL.md"
       - test -f "{{.BUILD_DIR}}/config.json"
       - test -f "{{.BUILD_DIR}}/requirements.txt"
+      - test -f "{{.BUILD_DIR}}/LICENSE"
+      - test -f "{{.BUILD_DIR}}/THIRD_PARTY_LICENSES.md"
       - test -f "{{.BUILD_DIR}}/agents/openai.yaml"
       - test -f "{{.BUILD_DIR}}/docs/reference/fundus-cli-reference.md"
       - test -f "{{.BUILD_DIR}}/docs/reference/fundus-workbench-examples.md"
       - test -f "{{.BUILD_DIR}}/scripts/fundus.py"
       - test -f "{{.BUILD_DIR}}/scripts/fundus_mcp.py"
+      - test -x "{{.BUILD_DIR}}/scripts/fundus_mcp_launcher.sh"
       - test -f "{{.BUILD_DIR}}/vendor/ruamel/yaml/__init__.py"
       - test -f "{{.BUILD_DIR}}/vendor/ruamel_yaml-0.19.1.dist-info/licenses/LICENSE"
       - test -f "{{.PLUGIN_BUILD_DIR}}/.codex-plugin/plugin.json"
       - test -f "{{.PLUGIN_BUILD_DIR}}/.mcp.json"
+      - test -f "{{.PLUGIN_BUILD_DIR}}/LICENSE"
+      - test -f "{{.PLUGIN_BUILD_DIR}}/THIRD_PARTY_LICENSES.md"
       - test -f "{{.PLUGIN_BUILD_DIR}}/skills/{{.SKILL_NAME}}/SKILL.md"
       - test -f "{{.PLUGIN_MARKETPLACE_DIR}}/.agents/plugins/marketplace.json"
       - test -f "{{.PLUGIN_MARKETPLACE_DIR}}/plugins/{{.SKILL_NAME}}/.codex-plugin/plugin.json"
@@ -143,6 +149,7 @@ tasks:
       - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" "{{.BUILD_DIR}}/scripts/fundus_mcp.py" --check
       - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" scripts/audit_token_budget.py
       - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" scripts/validate_plugin_package.py "{{.PLUGIN_BUILD_DIR}}"
+      - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" scripts/verify_release_consistency.py .codex-plugin/plugin.json "{{.PLUGIN_BUILD_DIR}}" "{{.PLUGIN_MARKETPLACE_DIR}}"
       - task: test:mcp-integration
       - |
         if test -f "{{.PLUGIN_VALIDATOR}}"; then

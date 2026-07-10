@@ -185,15 +185,11 @@ Current Codex plugin documentation accepts a direct server map or a wrapped `mcp
 
 ### Current path behavior
 
-Area paths receive explicit traversal checks.
+Ordinary note operations use explicit active, archived, reserved, backup, and migration path value objects. Active and archive note operations are constrained to their respective roots under Fundus after symlink resolution. Note paths require `.md`, reject directories and reserved `index.md`/`log.md`, and preserve the existing vault-relative `Fundus/...` interface.
 
-Several project and note operations currently resolve against the whole vault, not the Fundus root:
+Project names are safe, non-reserved single segments. Area paths require an allowlisted root such as `Epics`, `Domains`, or `Operations` plus a logical area name. Global project enumeration excludes archive and area roots.
 
-- a project override is not constrained to one safe segment,
-- `resolve_doc_path()` accepts any path inside the vault,
-- archived `original_path` is resolved with the same vault-wide rule.
-
-This is a target safety gap even though writes remain bounded by the vault.
+Archived `original_path` metadata is treated as untrusted input and must resolve as an active Fundus note before restore. Path-related failures carry stable codes such as `PATH_OUTSIDE_FUNDUS`, `PROJECT_NAME_INVALID`, `AREA_PATH_INVALID`, and `NOTE_PATH_INVALID`.
 
 ### Current reserved-file behavior
 
@@ -201,7 +197,7 @@ The documented corpus contract says active `index.md` and `log.md` have no front
 
 Migration and verification enforce that rule.
 
-`area_init()` currently generates `overview.md`, `index.md`, and `log.md` through the same frontmatter-producing path. Newly initialized reserved files can therefore violate the verifier's contract.
+`area_init()` writes concept frontmatter only to `overview.md`; `index.md` and `log.md` are frontmatter-free reserved files. A newly initialized area passes corpus verification.
 
 ### Current scope move behavior
 

@@ -103,10 +103,10 @@ The P11 transport, lifecycle, package-shape, error-recovery, and independent-cli
 | Phase | Status | Priority | Depends on |
 | --- | --- | --- | --- |
 | P11 — MCP and Codex package conformance | done | critical | none |
-| P12 — Fundus path safety and corpus invariants | ready | critical | none |
+| P12 — Fundus path safety and corpus invariants | done | critical | none |
 | P13 — Search consistency and index freshness | planned | critical | P12 |
 | P14 — Revisions, locking, and recoverable mutations | planned | critical | P12 |
-| P15 — Frontmatter correctness | planned | high | none |
+| P15 — Frontmatter correctness | ready | high | none |
 | P16 — Canonical scope and move semantics | planned | high | P12, P15 |
 | P17 — Explicit operation and MCP tool contracts | planned | high | P11 |
 | P18 — Proposal/apply, duplicates, and provenance | planned | high | P14, P17 |
@@ -257,7 +257,7 @@ Next phase:
 
 ## P12 — Fundus path safety and corpus invariants
 
-Status: ready
+Status: done
 
 ### Goal
 
@@ -265,30 +265,76 @@ Ensure normal Fundus operations can affect only correctly classified paths insid
 
 ### Required implementation
 
-- [ ] Introduce operation-specific path constructors or value objects.
-- [ ] Validate project names as safe single segments.
-- [ ] Constrain ordinary note read/write paths to the Fundus root.
-- [ ] Constrain archive operations to active or archive roots as appropriate.
-- [ ] Validate restore `original_path` as an active Fundus path.
-- [ ] Require Markdown suffix for note operations unless explicitly justified.
-- [ ] Reject directories and reserved paths where notes are expected.
-- [ ] Add symlink escape protections and tests.
-- [ ] Make allowed area roots explicit or configurable.
-- [ ] Ensure global project enumeration excludes area roots.
-- [ ] Generate `index.md` and `log.md` without frontmatter in `area init`.
-- [ ] Make `area init` followed by corpus verification pass.
-- [ ] Return stable path-related error codes.
-- [ ] Update doctor output for resolved roots and classifications.
+- [x] Introduce operation-specific path constructors or value objects.
+- [x] Validate project names as safe single segments.
+- [x] Constrain ordinary note read/write paths to the Fundus root.
+- [x] Constrain archive operations to active or archive roots as appropriate.
+- [x] Validate restore `original_path` as an active Fundus path.
+- [x] Require Markdown suffix for note operations unless explicitly justified.
+- [x] Reject directories and reserved paths where notes are expected.
+- [x] Add symlink escape protections and tests.
+- [x] Make allowed area roots explicit or configurable.
+- [x] Ensure global project enumeration excludes area roots.
+- [x] Generate `index.md` and `log.md` without frontmatter in `area init`.
+- [x] Make `area init` followed by corpus verification pass.
+- [x] Return stable path-related error codes.
+- [x] Update doctor output for resolved roots and classifications.
 
 ### Acceptance criteria
 
-- [ ] Traversal and vault-outside-Fundus fixtures fail without writes.
-- [ ] Another Obsidian note inside the vault but outside Fundus cannot be read or mutated through note tools.
-- [ ] Archive metadata cannot redirect restore outside active Fundus.
-- [ ] `area init` produces valid reserved and concept files.
-- [ ] Project and area enumeration are not conflated.
-- [ ] Existing valid project and area workflows remain compatible.
-- [ ] `task verify` passes.
+- [x] Traversal and vault-outside-Fundus fixtures fail without writes.
+- [x] Another Obsidian note inside the vault but outside Fundus cannot be read or mutated through note tools.
+- [x] Archive metadata cannot redirect restore outside active Fundus.
+- [x] `area init` produces valid reserved and concept files.
+- [x] Project and area enumeration are not conflated.
+- [x] Existing valid project and area workflows remain compatible.
+- [x] `task verify` passes.
+
+### Completion evidence — 2026-07-10
+
+Commit:
+
+- Base commit `4e54f32`; phase checkpoint committed immediately after this evidence update.
+
+Files changed:
+
+- `scripts/fundus.py`
+- `tests/test_fundus.py`
+- `docs/agent-implementation-tracker.md`
+- `docs/implementation.md`
+
+Commands and results:
+
+```text
+python -m unittest tests.test_fundus tests.test_fundus_mcp
+# 86 tests passed
+
+task verify
+# packaged MCP integration 2/2 passed
+# full suite 92 tests passed; one expected package-only skip
+
+git diff --check
+# passed
+```
+
+Implemented evidence:
+
+- Active, archived, reserved, backup, and migration path value objects constrain operation-specific paths.
+- Project names are safe non-reserved segments; areas require an explicit allowlisted root and logical name.
+- Vault paths outside Fundus, traversal, non-Markdown paths, directories, reserved note paths, and symlink escapes fail before writes.
+- Restore treats `original_path` as untrusted and revalidates it as an active Fundus note.
+- `area init` writes frontmatter-free `index.md` and `log.md`; the resulting corpus passes verification.
+- Doctor reports resolved roots, scope classification, allowlisted area roots, reserved files, and symlink policy.
+- All tests used temporary vaults; no live corpus operation was run.
+
+Residual risks:
+
+- P16 owns canonical logical-scope classification across every move and redirect behavior.
+- P17 will consolidate coded errors into the operation registry and MCP structured results.
+
+Next phase:
+
+- P15 — Frontmatter correctness is ready.
 
 ---
 
@@ -366,7 +412,7 @@ Prevent lost updates and index corruption and make multi-step file operations re
 
 ## P15 — Frontmatter correctness
 
-Status: planned
+Status: ready
 
 ### Goal
 

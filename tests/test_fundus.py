@@ -1013,6 +1013,11 @@ class ScopeAndAreaTest(FundusTestCase):
 
         self.assertIn("Fundus/Epics/AI Agent Templates/overview.md", result["created"])
         self.assertIn("Fundus/Epics/AI Agent Templates/index.md", second["skipped"])
+        for filename in fundus.RESERVED_FILENAMES:
+            reserved = self.vault_path / "Fundus" / "Epics" / "AI Agent Templates" / filename
+            frontmatter, _ = fundus.parse_frontmatter(reserved.read_text())
+            self.assertEqual(frontmatter, {})
+        self.assertTrue(fundus.verify_fundus_corpus(self.config)["passed"])
         for directory in fundus.AREA_SUBDIRECTORIES:
             self.assertTrue((self.vault_path / "Fundus" / "Epics" / "AI Agent Templates" / directory).is_dir())
 
@@ -1034,6 +1039,106 @@ class ScopeAndAreaTest(FundusTestCase):
         self.assertEqual(frontmatter["scope"], "area")
         self.assertEqual(frontmatter["scope_path"], "Epics/AI Agent Templates")
         self.assertNotIn("project", frontmatter)
+
+
+class PathSafetyTest(FundusTestCase):
+    def test_project_names_must_be_safe_non_reserved_segments(self) -> None:
+        for project in ["", ".", "..", "../other", "nested/project", "nested\\project", "/absolute", "_archive", "Epics"]:
+            with self.subTest(project=project):
+                with self.assertRaises(fundus.FundusError) as raised:
+                    fundus.project_scope(project)
+                self.assertEqual(raised.exception.code, "PROJECT_NAME_INVALID")
+
+    def test_area_paths_require_an_explicit_allowed_root_and_name(self) -> None:
+        for area in ["Random/Area", "Epics", "Epics\\Unsafe", "Operations/../Other"]:
+            with self.subTest(area=area):
+                with self.assertRaises(fundus.FundusError) as raised:
+                    fundus.area_scope(area)
+                self.assertEqual(raised.exception.code, "AREA_PATH_INVALID")
+
+    def test_note_operations_reject_vault_paths_outside_fundus(self) -> None:
+        outside = self.vault_path / "Other" / "private.md"
+        outside.parent.mkdir()
+        outside.write_text("do not touch")
+
+        operations = [
+            lambda: fundus.read_document(self.config, "Other/private.md"),
+            lambda: fundus.update_document(self.config, "demo", "Other/private.md", "rewrite", "changed", None),
+            lambda: fundus.archive_document(self.config, "Other/private.md", "unsafe"),
+            lambda: fundus.move_document(self.config, "Other/private.md", "Fundus/demo/private.md"),
+        ]
+        for operation in operations:
+            with self.subTest(operation=operation):
+                with self.assertRaises(fundus.FundusError) as raised:
+                    operation()
+                self.assertEqual(raised.exception.code, "PATH_OUTSIDE_FUNDUS")
+        self.assertEqual(outside.read_text(), "do not touch")
+
+    def test_note_paths_reject_traversal_non_markdown_directories_and_reserved_files(self) -> None:
+        directory = self.vault_path / "Fundus" / "demo" / "folder.md"
+        directory.mkdir(parents=True)
+        for path in [
+            "Fundus/../Other/private.md",
+            "../Other/private.md",
+            "Fundus/demo/note.txt",
+            "Fundus/demo/folder.md",
+            "Fundus/demo/index.md",
+            "Fundus/demo/log.md",
+        ]:
+            with self.subTest(path=path):
+                with self.assertRaises(fundus.FundusError):
+                    fundus.resolve_fundus_note_path(self.config, path)
+
+    def test_restore_treats_original_path_as_untrusted_active_path(self) -> None:
+        created = fundus.create_document(self.config, "demo", "Archived", "Body", None)
+        archived = fundus.archive_document(self.config, created["path"], "old")
+        archive_path = self.vault_path / archived["path"]
+        frontmatter, body = fundus.parse_frontmatter(archive_path.read_text())
+        frontmatter["original_path"] = "Other/escaped.md"
+        archive_path.write_text(fundus.render_existing_document(frontmatter, body))
+
+        with self.assertRaises(fundus.FundusError) as raised:
+            fundus.restore_document(self.config, archived["path"])
+
+        self.assertEqual(raised.exception.code, "PATH_OUTSIDE_FUNDUS")
+        self.assertTrue(archive_path.exists())
+        self.assertFalse((self.vault_path / "Other" / "escaped.md").exists())
+
+    def test_symlinked_note_parent_cannot_escape_fundus(self) -> None:
+        outside = self.vault_path / "outside"
+        outside.mkdir()
+        (outside / "secret.md").write_text("secret")
+        project = self.vault_path / "Fundus" / "demo"
+        project.mkdir(parents=True, exist_ok=True)
+        link = project / "linked"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are unavailable")
+
+        with self.assertRaises(fundus.FundusError) as raised:
+            fundus.read_document(self.config, "Fundus/demo/linked/secret.md")
+
+        self.assertEqual(raised.exception.code, "PATH_OUTSIDE_FUNDUS")
+
+    def test_global_project_enumeration_excludes_area_and_reserved_roots(self) -> None:
+        root = self.vault_path / "Fundus"
+        for name in ["demo", "another", "Epics", "Domains", "Decisions", "Interviews", "References", "Logs", "Operations", "_archive"]:
+            (root / name).mkdir(parents=True, exist_ok=True)
+
+        self.assertEqual(fundus.fundus_project_names(self.config), ["another", "demo"])
+
+    def test_doctor_reports_resolved_path_policy_and_scope_classification(self) -> None:
+        report = fundus.doctor_report_for_scope(
+            self.config,
+            self.vault_path / "repo",
+            "demo",
+            fundus.project_scope("demo"),
+        )
+
+        self.assertEqual(report["scope_classification"]["kind"], "project")
+        self.assertEqual(report["path_policy"]["ordinary_notes_root"], str(self.vault_path / "Fundus"))
+        self.assertTrue(report["path_policy"]["symlink_escape_protection"])
 
 
 if __name__ == "__main__":

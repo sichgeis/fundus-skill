@@ -55,7 +55,9 @@ AREA_ROOT_DIRNAMES = {"Epics", "Domains", "Decisions", "Interviews", "References
 
 
 class FundusError(Exception):
-    pass
+    def __init__(self, message: str, code: str = "FUNDUS_ERROR") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -72,6 +74,81 @@ class Scope:
     kind: str
     path: str
     display_name: str
+
+
+@dataclass(frozen=True)
+class FundusRoot:
+    path: Path
+
+    @classmethod
+    def from_config(cls, config: Config) -> FundusRoot:
+        return cls(ensure_within(config.vault_path, config.vault_path / config.fundus_dir))
+
+
+@dataclass(frozen=True)
+class ActiveNotePath:
+    path: Path
+
+    @classmethod
+    def resolve(cls, config: Config, value: str | Path, *, allow_reserved: bool = False) -> ActiveNotePath:
+        path, relative_parts = resolve_path_inside_fundus(config, value)
+        validate_markdown_note_path(path, relative_parts, allow_reserved=allow_reserved)
+        if relative_parts and relative_parts[0] == ARCHIVE_DIRNAME:
+            raise FundusError("Expected an active Fundus note path, not an archived path.", "NOTE_PATH_INVALID")
+        return cls(path)
+
+
+@dataclass(frozen=True)
+class ArchivedNotePath:
+    path: Path
+
+    @classmethod
+    def resolve(cls, config: Config, value: str | Path) -> ArchivedNotePath:
+        path, relative_parts = resolve_path_inside_fundus(config, value)
+        validate_markdown_note_path(path, relative_parts, allow_reserved=False)
+        if not relative_parts or relative_parts[0] != ARCHIVE_DIRNAME:
+            raise FundusError("Expected a Fundus archive note path.", "NOTE_PATH_INVALID")
+        return cls(path)
+
+
+@dataclass(frozen=True)
+class ReservedFilePath:
+    path: Path
+
+    @classmethod
+    def resolve(cls, config: Config, value: str | Path) -> ReservedFilePath:
+        path, relative_parts = resolve_path_inside_fundus(config, value)
+        validate_markdown_note_path(path, relative_parts, allow_reserved=True)
+        if relative_parts and relative_parts[0] == ARCHIVE_DIRNAME:
+            raise FundusError("Reserved files must be active Fundus paths.", "NOTE_PATH_INVALID")
+        if path.name not in RESERVED_FILENAMES:
+            raise FundusError("Expected index.md or log.md.", "NOTE_PATH_INVALID")
+        return cls(path)
+
+
+@dataclass(frozen=True)
+class BackupPath:
+    path: Path
+
+    @classmethod
+    def resolve(cls, config: Config, value: str | Path) -> BackupPath:
+        root = ensure_within(config.vault_path, config.vault_path / BACKUP_DIRNAME)
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        return cls(ensure_within(root, candidate, code="BACKUP_PATH_INVALID"))
+
+
+@dataclass(frozen=True)
+class MigrationSourcePath:
+    path: Path
+
+    @classmethod
+    def resolve(cls, config: Config, value: str | Path) -> MigrationSourcePath:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = config.vault_path / candidate
+        return cls(ensure_within(config.vault_path, candidate, code="MIGRATION_PATH_INVALID"))
 
 
 @dataclass
@@ -204,39 +281,58 @@ def detect_project_name(project_root: Path) -> str:
     return project_root.name
 
 
-def ensure_within(root: Path, target: Path) -> Path:
+def ensure_within(root: Path, target: Path, *, code: str = "PATH_OUTSIDE_FUNDUS") -> Path:
     root_resolved = root.resolve()
     target_resolved = target.resolve()
     try:
         target_resolved.relative_to(root_resolved)
     except ValueError as exc:
-        raise FundusError(f"Resolved path escapes the vault root: {target}") from exc
+        raise FundusError(f"Resolved path escapes the allowed root: {target}", code) from exc
     return target_resolved
 
 
+def normalize_project_name(project_name: str) -> str:
+    normalized = project_name.strip()
+    if (
+        not normalized
+        or normalized in {".", ".."}
+        or Path(normalized).is_absolute()
+        or "/" in normalized
+        or "\\" in normalized
+        or "\x00" in normalized
+        or normalized in RESERVED_FUNDUS_DIRNAMES
+        or normalized in AREA_ROOT_DIRNAMES
+    ):
+        raise FundusError("Project name must be one safe, non-reserved path segment.", "PROJECT_NAME_INVALID")
+    return normalized
+
+
 def fundus_project_dir(config: Config, project_name: str) -> Path:
-    project_dir = config.vault_path / config.fundus_dir / project_name
-    return ensure_within(config.vault_path, project_dir)
+    project_dir = fundus_root_dir(config) / normalize_project_name(project_name)
+    return ensure_within(fundus_root_dir(config), project_dir)
 
 
 def normalize_area_path(area: str) -> str:
     original = area.strip()
-    if Path(original).is_absolute():
-        raise FundusError("--area must be relative to the Fundus root.")
+    if Path(original).is_absolute() or "\\" in original or "\x00" in original:
+        raise FundusError("--area must be a safe path relative to the Fundus root.", "AREA_PATH_INVALID")
     raw = original.strip("/")
     if not raw:
-        raise FundusError("--area must not be empty.")
-    path = Path(raw)
+        raise FundusError("--area must not be empty.", "AREA_PATH_INVALID")
     parts = [part for part in raw.split("/") if part]
     if any(part in {".", ".."} for part in parts):
-        raise FundusError("--area must not contain '.' or '..' path segments.")
+        raise FundusError("--area must not contain '.' or '..' path segments.", "AREA_PATH_INVALID")
     if parts[0] in RESERVED_FUNDUS_DIRNAMES:
-        raise FundusError(f"--area must not target reserved Fundus directory: {parts[0]}")
+        raise FundusError(f"--area must not target reserved Fundus directory: {parts[0]}", "AREA_PATH_INVALID")
+    if parts[0] not in AREA_ROOT_DIRNAMES or len(parts) < 2:
+        allowed = ", ".join(sorted(AREA_ROOT_DIRNAMES))
+        raise FundusError(f"--area must start with an allowed area root and name: {allowed}", "AREA_PATH_INVALID")
     return "/".join(parts)
 
 
 def project_scope(project_name: str) -> Scope:
-    return Scope(kind="project", path=project_name, display_name=project_name)
+    normalized = normalize_project_name(project_name)
+    return Scope(kind="project", path=normalized, display_name=normalized)
 
 
 def area_scope(area: str) -> Scope:
@@ -251,27 +347,27 @@ def resolve_scope(project_name: str, area: str | None = None) -> Scope:
 
 
 def fundus_scope_dir(config: Config, scope: Scope) -> Path:
-    return ensure_within(config.vault_path, fundus_root_dir(config) / scope.path)
+    return ensure_within(fundus_root_dir(config), fundus_root_dir(config) / scope.path)
 
 
 def fundus_archive_dir(config: Config) -> Path:
-    return ensure_within(config.vault_path, fundus_root_dir(config) / ARCHIVE_DIRNAME)
+    return ensure_within(fundus_root_dir(config), fundus_root_dir(config) / ARCHIVE_DIRNAME)
 
 
 def fundus_archive_project_dir(config: Config, project_name: str) -> Path:
-    return ensure_within(config.vault_path, fundus_archive_dir(config) / project_name)
+    return ensure_within(fundus_archive_dir(config), fundus_archive_dir(config) / normalize_project_name(project_name))
 
 
 def fundus_archive_scope_dir(config: Config, scope: Scope) -> Path:
-    return ensure_within(config.vault_path, fundus_archive_dir(config) / scope.path)
+    return ensure_within(fundus_archive_dir(config), fundus_archive_dir(config) / scope.path)
 
 
 def fundus_root_dir(config: Config) -> Path:
-    return ensure_within(config.vault_path, config.vault_path / config.fundus_dir)
+    return FundusRoot.from_config(config).path
 
 
 def fundus_relative_path(config: Config, path: Path) -> str:
-    return str(ensure_within(config.vault_path, path).relative_to(fundus_root_dir(config)))
+    return str(ensure_within(fundus_root_dir(config), path).relative_to(fundus_root_dir(config)))
 
 
 def fundus_project_names(config: Config) -> list[str]:
@@ -281,12 +377,14 @@ def fundus_project_names(config: Config) -> list[str]:
     return sorted(
         path.name
         for path in root.iterdir()
-        if path.is_dir() and path.name != ARCHIVE_DIRNAME
+        if path.is_dir()
+        and path.name not in RESERVED_FUNDUS_DIRNAMES
+        and path.name not in AREA_ROOT_DIRNAMES
     )
 
 
 def index_path(config: Config) -> Path:
-    return ensure_within(config.vault_path, fundus_root_dir(config) / INDEX_FILENAME)
+    return ensure_within(fundus_root_dir(config), fundus_root_dir(config) / INDEX_FILENAME)
 
 
 def backup_root_dir(config: Config) -> Path:
@@ -613,8 +711,8 @@ def make_excerpt(body: str) -> str:
 
 def fundus_relative_parts_from_vault_path(config: Config, path: Path) -> tuple[str, ...]:
     try:
-        return tuple(ensure_within(config.vault_path, path).relative_to(fundus_root_dir(config)).parts)
-    except ValueError:
+        return tuple(ensure_within(fundus_root_dir(config), path).relative_to(fundus_root_dir(config)).parts)
+    except (FundusError, ValueError):
         return ()
 
 
@@ -622,7 +720,7 @@ def active_fundus_relative_path_for_document(config: Config, doc: Document) -> s
     original_path = str(doc.frontmatter.get("original_path") or "")
     if original_path:
         try:
-            original = resolve_doc_path(config, original_path)
+            original = resolve_active_note_path(config, original_path)
             return fundus_relative_path(config, original)
         except (FundusError, ValueError):
             pass
@@ -771,7 +869,7 @@ def refresh_index_entry(config: Config, path: Path) -> None:
     if existing_index is None:
         return
 
-    safe_path = ensure_within(config.vault_path, path)
+    safe_path = ensure_within(fundus_root_dir(config), path)
     relative_path = str(safe_path.relative_to(config.vault_path))
     documents = [doc for doc in existing_index["documents"] if doc.get("path") != relative_path]
     if safe_path.exists():
@@ -872,11 +970,58 @@ def present_index_entry(entry: dict[str, Any], score: int | None = None, reason:
     return payload
 
 
-def resolve_doc_path(config: Config, path_arg: str) -> Path:
-    raw_path = Path(path_arg).expanduser()
+def resolve_path_inside_fundus(config: Config, value: str | Path) -> tuple[Path, tuple[str, ...]]:
+    raw_path = Path(value).expanduser()
+    root = fundus_root_dir(config)
     if raw_path.is_absolute():
-        return ensure_within(config.vault_path, raw_path)
-    return ensure_within(config.vault_path, config.vault_path / raw_path)
+        candidate = raw_path
+    else:
+        raw_parts = raw_path.parts
+        fundus_parts = Path(config.fundus_dir).parts
+        if raw_parts[: len(fundus_parts)] == fundus_parts:
+            candidate = config.vault_path / raw_path
+        else:
+            raise FundusError(
+                f"Fundus note paths must start with {config.fundus_dir}/.",
+                "PATH_OUTSIDE_FUNDUS",
+            )
+    resolved = ensure_within(root, candidate, code="PATH_OUTSIDE_FUNDUS")
+    return resolved, tuple(resolved.relative_to(root).parts)
+
+
+def validate_markdown_note_path(
+    path: Path,
+    relative_parts: tuple[str, ...],
+    *,
+    allow_reserved: bool,
+) -> None:
+    if not relative_parts:
+        raise FundusError("A Fundus note path must not be the Fundus root.", "NOTE_PATH_INVALID")
+    if path.suffix.casefold() != ".md":
+        raise FundusError("Fundus note paths must use the .md suffix.", "NOTE_PATH_INVALID")
+    if path.exists() and not path.is_file():
+        raise FundusError("Fundus note path resolves to a directory.", "NOTE_PATH_INVALID")
+    if not allow_reserved and path.name in RESERVED_FILENAMES:
+        raise FundusError("index.md and log.md are reserved Fundus files.", "NOTE_PATH_INVALID")
+
+
+def resolve_active_note_path(config: Config, path_arg: str | Path, *, allow_reserved: bool = False) -> Path:
+    return ActiveNotePath.resolve(config, path_arg, allow_reserved=allow_reserved).path
+
+
+def resolve_archived_note_path(config: Config, path_arg: str | Path) -> Path:
+    return ArchivedNotePath.resolve(config, path_arg).path
+
+
+def resolve_fundus_note_path(config: Config, path_arg: str | Path, *, allow_reserved: bool = False) -> Path:
+    path, relative_parts = resolve_path_inside_fundus(config, path_arg)
+    validate_markdown_note_path(path, relative_parts, allow_reserved=allow_reserved)
+    return path
+
+
+def resolve_doc_path(config: Config, path_arg: str) -> Path:
+    """Compatibility alias for any validated Fundus Markdown note path."""
+    return resolve_fundus_note_path(config, path_arg)
 
 
 def entry_matches_scope(config: Config, entry: dict[str, Any], scope: Scope) -> bool:
@@ -1033,9 +1178,9 @@ def create_document(
     active_scope = scope or project_scope(project_name)
     project_dir = fundus_scope_dir(config, active_scope)
     slug = slugify(title)
-    path = ensure_within(config.vault_path, project_dir / f"{slug}.md")
+    path = resolve_active_note_path(config, project_dir / f"{slug}.md")
     if path.exists():
-        raise FundusError(f"Document already exists: {path.relative_to(config.vault_path)}")
+        raise FundusError(f"Document already exists: {path.relative_to(config.vault_path)}", "NOTE_ALREADY_EXISTS")
 
     frontmatter = frontmatter_for_new_document(
         config,
@@ -1116,9 +1261,9 @@ def update_document(
     section: str | None,
     scope: Scope | None = None,
 ) -> dict[str, Any]:
-    path = resolve_doc_path(config, path_arg)
+    path = resolve_active_note_path(config, path_arg)
     if not path.exists():
-        raise FundusError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
 
     text = path.read_text()
     frontmatter, body = parse_frontmatter(text)
@@ -1184,9 +1329,9 @@ def update_document(
 
 
 def read_document(config: Config, path_arg: str) -> str:
-    path = resolve_doc_path(config, path_arg)
+    path = resolve_fundus_note_path(config, path_arg)
     if not path.exists():
-        raise FundusError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
     return path.read_text()
 
 
@@ -1210,9 +1355,9 @@ def add_frontmatter_to_document(
     owner: str | None = None,
     last_verified: str | None = None,
 ) -> dict[str, Any]:
-    path = resolve_doc_path(config, path_arg)
+    path = resolve_active_note_path(config, path_arg)
     if not path.exists():
-        raise FundusError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
 
     text = path.read_text()
     existing_frontmatter, body = parse_frontmatter(text)
@@ -1357,7 +1502,7 @@ def normalize_frontmatter_for_path(
     apply: bool = False,
     add_missing: bool = False,
 ) -> dict[str, Any]:
-    safe_path = resolve_doc_path(config, str(path))
+    safe_path = resolve_fundus_note_path(config, str(path))
     if safe_path.suffix != ".md":
         raise FundusError(f"Can only normalize Markdown documents: {safe_path.relative_to(config.vault_path)}")
     ensure_within(fundus_root_dir(config), safe_path)
@@ -1449,7 +1594,7 @@ def normalize_frontmatter_paths(
         raise FundusError("--limit cannot be used with --path.")
 
     if path_arg:
-        paths = [resolve_doc_path(config, path_arg)]
+        paths = [resolve_fundus_note_path(config, path_arg)]
         scope_name = "path"
         scope_path = path_arg
     elif global_scope:
@@ -1513,7 +1658,7 @@ def age_days(value: str | None) -> int | None:
 
 def archive_destination_for(config: Config, doc: Document) -> Path:
     relative_path = Path(active_fundus_relative_path_for_document(config, doc))
-    return ensure_within(config.vault_path, fundus_archive_dir(config) / relative_path)
+    return ensure_within(fundus_archive_dir(config), fundus_archive_dir(config) / relative_path)
 
 
 def archive_candidates(
@@ -1613,8 +1758,12 @@ def cleanup_empty_directories(
     root = fundus_root_dir(config)
     archive_root = fundus_archive_dir(config)
     protected_directories = {root, archive_root}
-    active_scope = scope or project_scope(project_name)
-    candidate_roots = [root] if global_scope else [fundus_scope_dir(config, active_scope), fundus_archive_scope_dir(config, active_scope)]
+    active_scope = None if global_scope else (scope or project_scope(project_name))
+    candidate_roots = (
+        [root]
+        if global_scope
+        else [fundus_scope_dir(config, active_scope), fundus_archive_scope_dir(config, active_scope)]
+    )
     candidates: list[Path] = []
 
     for candidate_root in candidate_roots:
@@ -1639,9 +1788,9 @@ def cleanup_empty_directories(
 
 
 def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[str, Any]:
-    source_path = resolve_doc_path(config, path_arg)
+    source_path = resolve_active_note_path(config, path_arg)
     if not source_path.exists():
-        raise FundusError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
 
     doc = load_document(source_path, config.vault_path)
     if not doc.frontmatter:
@@ -1677,9 +1826,9 @@ def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[
 
 
 def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
-    archive_path = resolve_doc_path(config, path_arg)
+    archive_path = resolve_archived_note_path(config, path_arg)
     if not archive_path.exists():
-        raise FundusError(f"Document does not exist: {path_arg}")
+        raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
 
     doc = load_document(archive_path, config.vault_path)
     if not doc.frontmatter:
@@ -1690,7 +1839,7 @@ def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
     original_path = str(doc.frontmatter.get("original_path") or "")
     if not original_path:
         raise FundusError(f"Archived document is missing original_path: {doc.relative_path}")
-    destination_path = resolve_doc_path(config, original_path)
+    destination_path = resolve_active_note_path(config, original_path)
     if destination_path.exists():
         raise FundusError(f"Restore destination already exists: {original_path}")
 
@@ -1721,7 +1870,7 @@ def area_init(config: Config, project_name: str, area: str, area_type: str, titl
     skipped_paths: list[str] = []
 
     for directory in AREA_SUBDIRECTORIES:
-        path = ensure_within(config.vault_path, root / directory)
+        path = ensure_within(root, root / directory)
         path.mkdir(parents=True, exist_ok=True)
 
     files = {
@@ -1757,9 +1906,15 @@ def area_init(config: Config, project_name: str, area: str, area_type: str, titl
     }
 
     for filename, (file_title, doc_type, description, body) in files.items():
-        path = ensure_within(config.vault_path, root / filename)
+        path = ensure_within(root, root / filename)
         if path.exists():
             skipped_paths.append(str(path.relative_to(config.vault_path)))
+            continue
+        if filename in RESERVED_FILENAMES:
+            reserved_path = ReservedFilePath.resolve(config, path).path
+            atomic_write(reserved_path, f"# {file_title}\n\n{body.strip()}\n")
+            refresh_index_entry(config, reserved_path)
+            created_paths.append(str(reserved_path.relative_to(config.vault_path)))
             continue
         frontmatter = frontmatter_for_new_document(
             config,
@@ -1771,9 +1926,10 @@ def area_init(config: Config, project_name: str, area: str, area_type: str, titl
             description,
             f"area/{slugify_path(scope.path)}/{path.stem}",
         )
-        atomic_write(path, render_document(frontmatter, body))
-        refresh_index_entry(config, path)
-        created_paths.append(str(path.relative_to(config.vault_path)))
+        note_path = resolve_active_note_path(config, path)
+        atomic_write(note_path, render_document(frontmatter, body))
+        refresh_index_entry(config, note_path)
+        created_paths.append(str(note_path.relative_to(config.vault_path)))
 
     return {
         "area": scope.path,
@@ -1785,10 +1941,10 @@ def area_init(config: Config, project_name: str, area: str, area_type: str, titl
 
 
 def move_document(config: Config, source_arg: str, destination_arg: str, leave_stub: bool = False) -> dict[str, Any]:
-    source_path = resolve_doc_path(config, source_arg)
-    destination_path = resolve_doc_path(config, destination_arg)
+    source_path = resolve_active_note_path(config, source_arg)
+    destination_path = resolve_active_note_path(config, destination_arg)
     if not source_path.exists():
-        raise FundusError(f"Document does not exist: {source_arg}")
+        raise FundusError(f"Document does not exist: {source_arg}", "NOTE_NOT_FOUND")
     if destination_path.exists():
         raise FundusError(f"Move destination already exists: {destination_arg}")
     root = fundus_root_dir(config)
@@ -2308,14 +2464,28 @@ def doctor_report_for_scope(config: Config, project_root: Path, project_name: st
     return {
         "project_root": str(project_root),
         "project": project_name,
+        "project_name_valid": True,
         "scope": scope.kind,
         "scope_path": scope.path,
+        "scope_classification": {
+            "kind": scope.kind,
+            "logical_root": scope.path,
+            "allowed_area_roots": sorted(AREA_ROOT_DIRNAMES),
+        },
         "config_sources": config_sources,
         "vault_path": str(config.vault_path),
         "fundus_dir": config.fundus_dir,
         "fundus_root": str(root),
+        "fundus_root_exists": root.exists(),
         "scope_fundus_dir": str(scope_dir),
         "scope_fundus_exists": scope_dir.exists(),
+        "path_policy": {
+            "ordinary_notes_root": str(root),
+            "archive_root": str(fundus_archive_dir(config)),
+            "reserved_files": sorted(RESERVED_FILENAMES),
+            "markdown_required": True,
+            "symlink_escape_protection": True,
+        },
         "index": index_status(config),
         "writes_possible": root.exists() or os.access(config.vault_path, os.W_OK),
     }
@@ -2661,7 +2831,7 @@ def main() -> int:
 
         raise FundusError(f"Unknown command: {args.command}")
     except FundusError as exc:
-        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        print(json.dumps({"error": str(exc), "code": exc.code}), file=sys.stderr)
         return 1
 
 

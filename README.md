@@ -6,7 +6,7 @@ The plugin packages the `fundus` skill, a self-contained local MCP server, and a
 
 Existing Fundus documents can be updated by appending content, replacing a named heading section, or rewriting the full article body with `update --mode rewrite`.
 Created documents keep one generated top-level title heading; duplicate matching H1 headings in supplied content are removed automatically.
-Search is backed by a lightweight JSON index at `{vault_path}/{fundus_dir}/.fundus-index.json` when present, so Codex can find likely matching notes from titles, tags, filenames, headings, ticket IDs, and short excerpts without reading every note body. Old notes can be archived reversibly under `{vault_path}/{fundus_dir}/_archive/...`, with nested area paths mirrored under the archive root.
+Search is accelerated by a lightweight JSON index at `{vault_path}/{fundus_dir}/.fundus-index.json`. Every search checks relevant file fingerprints, repairs changed or added records in memory, drops deleted paths, and uses the same scorer with or without an index. Old notes can be archived reversibly under `{vault_path}/{fundus_dir}/_archive/...`, with nested area paths mirrored under the archive root.
 
 ## Current Direction
 
@@ -317,7 +317,9 @@ python dist/fundus/scripts/fundus.py index status
 python dist/fundus/scripts/fundus.py doctor
 ```
 
-`scan --query` uses the index when it exists and falls back to direct Markdown scanning when it does not. Successful `create` and `update` operations refresh their affected index entry automatically if an index already exists.
+`scan --query` treats the index as a read-only acceleration cache. Missing, stale, corrupt, or incompatible records fall back to current Markdown in memory, so external edits, additions, and deletions appear on the next search without turning scan into a write. Use `index rebuild` to persist repairs. Successful Fundus mutations refresh their affected entry when a current index exists.
+
+Measure the 2,000-note release target with `task benchmark:search`; the committed baseline is documented in `docs/testing-and-validation.md`.
 
 ## Archive
 

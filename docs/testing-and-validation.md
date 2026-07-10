@@ -254,6 +254,37 @@ Initial release gate:
 
 If hardware or Python startup dominates, document measurement method and adjust the target through a recorded decision rather than silently ignoring it.
 
+### P13 measured baseline — 2026-07-10
+
+Command:
+
+```text
+task benchmark:search
+```
+
+Environment and method:
+
+- macOS 26.5.2 arm64, Python 3.14.6;
+- 2,000 deterministic project notes in a temporary vault;
+- one full index rebuild;
+- 25 warm searches, each validating relevant file fingerprints and scoring the shared record shape;
+- one external file edit followed by an in-memory incremental search repair.
+
+Results:
+
+```text
+generation:                    2358.649 ms
+full rebuild:                  1895.374 ms
+warm search p50:                 53.218 ms
+warm search p95:                 74.543 ms
+warm search max:                 74.980 ms
+one-file in-memory refresh:      46.130 ms
+index size:                    3778517 bytes
+max RSS (macOS raw bytes):     62242816
+```
+
+The measured p95 passes the initial `<= 100 ms` release gate. The benchmark uses only temporary data and asserts the threshold when run through the Taskfile target.
+
 ## P14 concurrency and recovery tests
 
 ### Revision conflicts

@@ -324,10 +324,11 @@ class McpTool:
     description: str
     input_schema: dict[str, Any]
     handler: Any
+    annotations: dict[str, bool]
 
 
 TOOL_DESCRIPTIONS = {
-    "scan_fundus": "Search Fundus notes for relevant project, area, ticket, domain, or architecture knowledge.",
+    "scan_fundus": "Search current Fundus notes through a read-only, freshness-checked index cache.",
     "read_note": "Read a Fundus note by repository-relative vault path.",
     "create_note": "Create a new Fundus note with OKF-compatible retrieval metadata.",
     "update_note": "Append, replace a section, or rewrite an existing Fundus note.",
@@ -347,6 +348,16 @@ TOOL_DESCRIPTIONS = {
     "archive_cleanup": "Remove empty active Fundus directories left after archival moves.",
     "archive_status": "Summarize archived note counts for the current project or area.",
     "doctor": "Show resolved project, vault, scope, index, and corpus diagnostics.",
+}
+
+
+TOOL_ANNOTATIONS = {
+    "scan_fundus": {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
 }
 
 
@@ -482,6 +493,7 @@ def build_tools() -> list[McpTool]:
                 description=TOOL_DESCRIPTIONS[name],
                 input_schema=input_schema_for_function(function),
                 handler=function,
+                annotations=TOOL_ANNOTATIONS.get(name, {}),
             )
         )
     return tools
@@ -562,6 +574,7 @@ class JsonRpcMcpServer:
                 "name": tool.name,
                 "description": tool.description,
                 "inputSchema": tool.input_schema,
+                **({"annotations": tool.annotations} if tool.annotations else {}),
             }
             for tool in self.tools.values()
         ]

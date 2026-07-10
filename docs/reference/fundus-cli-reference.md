@@ -127,7 +127,7 @@ python /path/to/fundus/scripts/fundus.py index rebuild
 python /path/to/fundus/scripts/fundus.py doctor
 ```
 
-`scan --query` uses the index when present and falls back to direct Markdown scanning when absent.
+`scan --query` validates cached fingerprints for the relevant scope and repairs stale or missing records in memory. Indexed and uncached records use the same scorer and ordering. Search never writes the cache; run `index rebuild` to persist repairs. Corrupt or incompatible indexes fall back safely and are reported by `index status`.
 
 ## Archive
 

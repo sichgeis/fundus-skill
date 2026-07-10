@@ -40,7 +40,7 @@ DEFAULT_CONFIG = {
     },
 }
 INDEX_FILENAME = ".fundus-index.json"
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 MAX_INDEX_EXCERPT_CHARS = 600
 MAX_SCAN_RESULTS = 20
 ARCHIVE_DIRNAME = "_archive"
@@ -93,6 +93,13 @@ class ScopeClassification:
     active_relative_path: str
     physical_parent: str
     scope_relative_path: str
+
+
+@dataclass(frozen=True)
+class IndexLoadResult:
+    data: dict[str, Any] | None
+    state: str
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -768,7 +775,7 @@ def frontmatter_bool(value: Any) -> bool:
 
 
 def tokenize(value: str) -> list[str]:
-    return [term.casefold() for term in re.findall(r"[A-Za-z0-9]+", value)]
+    return [term.casefold() for term in re.findall(r"[^\W_]+", value, flags=re.UNICODE)]
 
 
 def extract_ticket_ids(value: str) -> list[str]:
@@ -861,6 +868,7 @@ def index_entry_for_document(config: Config, doc: Document) -> dict[str, Any]:
     scope_metadata = scope_metadata_for_document(config, doc)
     redirect = is_redirect_frontmatter(doc.frontmatter)
     kind = "redirect" if redirect else ("reserved" if doc.path.name in RESERVED_FILENAMES else "concept")
+    stat = doc.path.stat()
     return {
         "path": doc.relative_path,
         "project": doc.project,
@@ -884,7 +892,10 @@ def index_entry_for_document(config: Config, doc: Document) -> dict[str, Any]:
         "excerpt": make_excerpt(doc.body),
         "tokens": sorted(set(tokenize(source_text))),
         "ticket_ids": extract_ticket_ids(source_text),
-        "mtime_ns": doc.path.stat().st_mtime_ns,
+        "revision": f"sha256:{file_sha256(doc.path)}",
+        "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
+        "size": stat.st_size,
         "archived": archived,
         "original_path": doc.frontmatter.get("original_path"),
         "archived_at": doc.frontmatter.get("archived_at"),
@@ -906,14 +917,38 @@ def iter_fundus_markdown_paths(config: Config) -> list[Path]:
     return sorted([*active_paths, *archive_paths])
 
 
-def load_index(config: Config) -> dict[str, Any] | None:
+def load_index_result(config: Config) -> IndexLoadResult:
     path = index_path(config)
     if not path.exists():
-        return None
-    data = load_json(path)
+        return IndexLoadResult(None, "missing")
+    try:
+        data = load_json(path)
+    except FundusError as exc:
+        return IndexLoadResult(None, "corrupt", str(exc))
     if data.get("version") != INDEX_VERSION or not isinstance(data.get("documents"), list):
-        return None
-    return data
+        return IndexLoadResult(None, "incompatible")
+
+    seen_paths: set[str] = set()
+    for record in data["documents"]:
+        if not isinstance(record, dict):
+            return IndexLoadResult(None, "corrupt", "Index documents must be objects.")
+        record_path = record.get("path")
+        if not isinstance(record_path, str) or not record_path or record_path in seen_paths:
+            return IndexLoadResult(None, "corrupt", "Index document paths must be unique non-empty strings.")
+        seen_paths.add(record_path)
+        if (
+            not isinstance(record.get("mtime_ns"), int)
+            or not isinstance(record.get("ctime_ns"), int)
+            or not isinstance(record.get("size"), int)
+        ):
+            return IndexLoadResult(None, "corrupt", f"Index fingerprint is invalid for {record_path}.")
+        if not str(record.get("revision") or "").startswith("sha256:"):
+            return IndexLoadResult(None, "corrupt", f"Index revision is invalid for {record_path}.")
+    return IndexLoadResult(data, "current")
+
+
+def load_index(config: Config) -> dict[str, Any] | None:
+    return load_index_result(config).data
 
 
 def write_index(config: Config, documents: list[dict[str, Any]]) -> dict[str, Any]:
@@ -946,6 +981,42 @@ def refresh_index_entry(config: Config, path: Path) -> None:
     if safe_path.exists():
         documents.append(index_entry_for_document(config, load_document(safe_path, config.vault_path)))
     write_index(config, documents)
+
+
+def index_record_is_fresh(record: dict[str, Any], path: Path) -> bool:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return False
+    return (
+        record.get("mtime_ns") == stat.st_mtime_ns
+        and record.get("ctime_ns") == stat.st_ctime_ns
+        and record.get("size") == stat.st_size
+        and str(record.get("revision") or "").startswith("sha256:")
+    )
+
+
+def search_records_for_scope(config: Config, scope: Scope, include_archived: bool) -> list[dict[str, Any]]:
+    index_result = load_index_result(config)
+    cached_by_path = {
+        str(record.get("path")): record
+        for record in (index_result.data or {}).get("documents", [])
+        if isinstance(record, dict)
+    }
+    records: list[dict[str, Any]] = []
+    for path in markdown_paths_for_scope(config, scope, include_archived):
+        relative_path = str(path.relative_to(config.vault_path))
+        record = cached_by_path.get(relative_path)
+        if record is None or not index_record_is_fresh(record, path):
+            record = index_entry_for_document(config, load_document(path, config.vault_path))
+        if not entry_matches_scope(config, record, scope):
+            continue
+        if record.get("kind") in {"redirect", "reserved"} or record.get("redirect_to"):
+            continue
+        if record.get("archived") and not include_archived:
+            continue
+        records.append(record)
+    return records
 
 
 def score_index_entry(entry: dict[str, Any], query: str | None) -> tuple[int, str]:
@@ -1010,9 +1081,11 @@ def score_index_entry(entry: dict[str, Any], query: str | None) -> tuple[int, st
 def present_index_entry(entry: dict[str, Any], score: int | None = None, reason: str | None = None, include_snippet: bool = False) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "path": entry.get("path"),
+        "id": entry.get("id"),
         "title": entry.get("title"),
         "tags": entry.get("tags") or [],
         "updated": entry.get("updated"),
+        "revision": entry.get("revision"),
     }
     if entry.get("project"):
         payload["project"] = entry.get("project")
@@ -1213,43 +1286,26 @@ def scan_documents(
     scope: Scope | None = None,
 ) -> list[dict[str, Any]]:
     active_scope = scope or project_scope(project_name)
-    existing_index = load_index(config)
-    if existing_index is not None:
-        matches: list[tuple[int, str, dict[str, Any]]] = []
-        for entry in existing_index["documents"]:
-            if not entry_matches_scope(config, entry, active_scope):
-                continue
-            if entry.get("kind") == "redirect" or entry.get("redirect_to"):
-                continue
-            if entry.get("archived") and not include_archived:
-                continue
-            score, reason = score_index_entry(entry, query)
-            if score <= 0:
-                continue
-            matches.append((score, reason, entry))
-
-        matches.sort(key=lambda item: (-item[0], str(item[2].get("title", ""))))
-        return [present_index_entry(entry, score, reason, include_snippet) for score, reason, entry in matches[:limit]]
-
     scope_dir = fundus_scope_dir(config, active_scope)
     archive_scope_dir = fundus_archive_scope_dir(config, active_scope)
     if not scope_dir.exists() and not (include_archived and archive_scope_dir.exists()):
         return []
 
-    query_terms = tokenize(query or "")
-    documents: list[dict[str, Any]] = []
-    scan_paths = markdown_paths_for_scope(config, active_scope, include_archived)
-
-    for path in scan_paths:
-        doc = load_document(path, config.vault_path)
-        if is_redirect_frontmatter(doc.frontmatter):
+    matches: list[tuple[int, str, dict[str, Any]]] = []
+    for record in search_records_for_scope(config, active_scope, include_archived):
+        score, reason = score_index_entry(record, query)
+        if score <= 0:
             continue
-        haystack = " ".join([doc.title, *doc.tags, path.name]).lower()
-        if query_terms and not all(term in haystack for term in query_terms):
-            continue
-        documents.append(present_index_entry(index_entry_for_document(config, doc)))
+        matches.append((score, reason, record))
 
-    return documents[:limit]
+    matches.sort(
+        key=lambda item: (
+            -item[0],
+            str(item[2].get("title", "")).casefold(),
+            str(item[2].get("path", "")),
+        )
+    )
+    return [present_index_entry(entry, score, reason, include_snippet) for score, reason, entry in matches[:limit]]
 
 
 def remove_duplicate_title_heading(body: str, title: str) -> str:
@@ -2192,30 +2248,36 @@ def archive_status(config: Config, project_name: str, scope: Scope | None = None
 
 def index_status(config: Config) -> dict[str, Any]:
     path = index_path(config)
-    data = load_index(config)
+    load_result = load_index_result(config)
+    data = load_result.data
     markdown_paths = iter_fundus_markdown_paths(config)
     markdown_count = len(markdown_paths)
     indexed_count = len(data["documents"]) if data else 0
-    indexed_mtimes = {doc.get("path"): doc.get("mtime_ns") for doc in data["documents"]} if data else {}
+    indexed_records = {str(doc.get("path")): doc for doc in data["documents"]} if data else {}
     stale_paths: list[str] = []
     if data:
         for markdown_path in markdown_paths:
             relative_path = str(markdown_path.relative_to(config.vault_path))
-            if indexed_mtimes.get(relative_path) != markdown_path.stat().st_mtime_ns:
+            record = indexed_records.get(relative_path)
+            if record is None or not index_record_is_fresh(record, markdown_path):
                 stale_paths.append(relative_path)
         markdown_relative_paths = {str(markdown_path.relative_to(config.vault_path)) for markdown_path in markdown_paths}
-        for indexed_path in indexed_mtimes:
+        for indexed_path in indexed_records:
             if indexed_path not in markdown_relative_paths:
                 stale_paths.append(str(indexed_path))
+    elif markdown_paths:
+        stale_paths.extend(str(markdown_path.relative_to(config.vault_path)) for markdown_path in markdown_paths)
     return {
         "path": str(path.relative_to(config.vault_path)),
         "exists": path.exists(),
-        "valid": data is not None,
+        "valid": load_result.state == "current",
+        "state": load_result.state,
+        "error": load_result.error,
         "documents": indexed_count,
         "markdown_documents": markdown_count,
         "generated": data.get("generated") if data else None,
-        "stale": data is None or indexed_count != markdown_count or bool(stale_paths),
-        "stale_paths": stale_paths[:20],
+        "stale": load_result.state != "current" or indexed_count != markdown_count or bool(stale_paths),
+        "stale_paths": sorted(set(stale_paths))[:20],
     }
 
 

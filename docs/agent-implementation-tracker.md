@@ -104,8 +104,8 @@ The P11 transport, lifecycle, package-shape, error-recovery, and independent-cli
 | --- | --- | --- | --- |
 | P11 — MCP and Codex package conformance | done | critical | none |
 | P12 — Fundus path safety and corpus invariants | done | critical | none |
-| P13 — Search consistency and index freshness | ready | critical | P12 |
-| P14 — Revisions, locking, and recoverable mutations | planned | critical | P12 |
+| P13 — Search consistency and index freshness | done | critical | P12 |
+| P14 — Revisions, locking, and recoverable mutations | ready | critical | P12 |
 | P15 — Frontmatter correctness | done | high | none |
 | P16 — Canonical scope and move semantics | done | high | P12, P15 |
 | P17 — Explicit operation and MCP tool contracts | planned | high | P11 |
@@ -340,7 +340,7 @@ Next phase:
 
 ## P13 — Search consistency and index freshness
 
-Status: ready
+Status: done
 
 ### Goal
 
@@ -348,35 +348,92 @@ Make the JSON index a safe acceleration cache whose presence never changes searc
 
 ### Required implementation
 
-- [ ] Extract one common document-to-search-record path.
-- [ ] Use one scorer for indexed and direct search.
-- [ ] Store content revision and sufficient fast-fingerprint metadata.
-- [ ] Detect changed, added, and removed paths for the relevant scope before search.
-- [ ] Refresh or bypass stale records before returning results.
-- [ ] Define whether search persists repair or performs it in memory.
-- [ ] Align MCP read-only annotations with the chosen repair policy.
-- [ ] Handle corrupt and incompatible indexes safely.
-- [ ] Exclude redirect records from ordinary results.
-- [ ] Preserve explicit archive search.
-- [ ] Version the new index shape.
-- [ ] Add deterministic search fixtures and equivalence tests.
-- [ ] Add performance benchmark output to verification or a dedicated task.
+- [x] Extract one common document-to-search-record path.
+- [x] Use one scorer for indexed and direct search.
+- [x] Store content revision and sufficient fast-fingerprint metadata.
+- [x] Detect changed, added, and removed paths for the relevant scope before search.
+- [x] Refresh or bypass stale records before returning results.
+- [x] Define whether search persists repair or performs it in memory.
+- [x] Align MCP read-only annotations with the chosen repair policy.
+- [x] Handle corrupt and incompatible indexes safely.
+- [x] Exclude redirect records from ordinary results.
+- [x] Preserve explicit archive search.
+- [x] Version the new index shape.
+- [x] Add deterministic search fixtures and equivalence tests.
+- [x] Add performance benchmark output to verification or a dedicated task.
 
 ### Acceptance criteria
 
-- [ ] No-index and current-index fixtures produce equivalent result identities and ordering.
-- [ ] External edit, add, and delete are visible on the next search.
-- [ ] Corrupt index does not produce incorrect results.
-- [ ] Archived and redirect policies hold.
-- [ ] 2,000-note benchmark is measured and documented.
-- [ ] Initial p95 target is met or a decision-record adjustment is approved.
-- [ ] `task verify` passes.
+- [x] No-index and current-index fixtures produce equivalent result identities and ordering.
+- [x] External edit, add, and delete are visible on the next search.
+- [x] Corrupt index does not produce incorrect results.
+- [x] Archived and redirect policies hold.
+- [x] 2,000-note benchmark is measured and documented.
+- [x] Initial p95 target is met or a decision-record adjustment is approved.
+- [x] `task verify` passes.
+
+### Completion evidence — 2026-07-10
+
+Files changed:
+
+- `scripts/fundus.py`
+- `scripts/fundus_mcp.py`
+- `scripts/benchmark_search.py`
+- `tests/test_fundus.py`
+- `tests/test_fundus_mcp.py`
+- `Taskfile.yml`
+- `README.md`
+- `docs/reference/fundus-cli-reference.md`
+- `docs/implementation.md`
+- `docs/testing-and-validation.md`
+- `docs/agent-implementation-tracker.md`
+
+Commands and results:
+
+```text
+python -m unittest tests.test_fundus.IndexSearchTest
+# 12 tests passed
+
+python -m unittest tests.test_fundus_mcp tests.test_fundus
+# 100 tests passed
+
+task benchmark:search
+# 2,000 notes; warm search p95 74.543 ms <= 100 ms
+
+task verify
+# packaged MCP integration 2/2 passed
+# full suite 106 tests passed; one expected package-only skip
+
+git diff --check
+# passed
+```
+
+Implemented evidence:
+
+- Index version 3 stores one canonical search-record shape with content revision plus mtime, ctime, and size fingerprints.
+- Current-index and uncached paths use the same Unicode-aware tokenization, record builder, scorer, filters, presentation, and deterministic score/title/path ordering.
+- Each search enumerates the relevant physical scope, reuses fresh records, rebuilds changed and added records in memory, and omits deleted paths without writing the index.
+- Corrupt, incompatible, and missing indexes fall back to current Markdown and remain untouched; index status reports their state and diagnostics.
+- Redirects and reserved files are excluded from ordinary evidence, while archived notes remain available only when explicitly requested.
+- Scan advertises read-only MCP annotations consistent with the in-memory repair policy.
+- Search results include stable ID and SHA-256 revision.
+- The deterministic temporary-vault benchmark measured 53.218 ms p50, 74.543 ms p95, 1,895.374 ms full rebuild, 46.130 ms one-file refresh, and a 3,778,517-byte index on arm64 macOS/Python 3.14.6.
+- All tests and benchmarks used temporary vaults; no live corpus operation was run.
+
+Residual risks:
+
+- P14 owns lock-protected persisted index updates and optimistic revision conflicts.
+- Benchmark results are machine-specific; the dedicated task keeps the threshold reproducible on the primary development host.
+
+Next phase:
+
+- P14 — Revisions, locking, and recoverable mutations is ready.
 
 ---
 
 ## P14 — Revisions, locking, and recoverable mutations
 
-Status: planned
+Status: ready
 
 ### Goal
 

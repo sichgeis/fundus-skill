@@ -108,20 +108,22 @@ The index is:
 {vault_path}/{fundus_dir}/.fundus-index.json
 ```
 
-It stores metadata, excerpts, tokens, ticket IDs, archive state, and `mtime_ns`.
+Index version 3 stores canonical search records with metadata, bounded excerpts, tokens, ticket IDs, archive/redirect kind, content revision, and a fast `mtime_ns`/`ctime_ns`/size fingerprint.
 
 Current behavior:
 
 - index rebuild scans active and archived Markdown,
 - create and update refresh an existing index entry,
 - archive and restore refresh source and destination entries,
-- scan uses the index whenever it exists and has a recognized version,
-- index status can separately report stale paths.
+- every scan enumerates the relevant physical scope and validates cached fingerprints,
+- changed and added files are converted to current records in memory and deleted files disappear immediately,
+- indexed and uncached records use the same record builder, scorer, filters, and deterministic ordering,
+- read-only search never persists repairs; `index rebuild` is the explicit persistence boundary,
+- corrupt, incompatible, and missing indexes fall back to current Markdown without being overwritten,
+- index status reports `current`, `missing`, `incompatible`, or `corrupt` plus stale paths,
+- redirects and reserved files are never ordinary evidence, while archives remain opt-in.
 
-Known semantic discrepancy:
-
-- indexed search considers body and heading tokens plus metadata,
-- direct fallback search considers title, tags, and filename.
+This in-memory repair policy keeps scan and its MCP wrapper read-only. The 2026-07-10 benchmark on the primary arm64 macOS development machine measured 2,000-note warm search at 53.218 ms p50 and 74.543 ms p95, below the 100 ms release target. Full rebuild was 1,895.374 ms, one-file in-memory refresh was 46.130 ms, and the index was 3,778,517 bytes. Re-run with `task benchmark:search`.
 
 ### Current write behavior
 

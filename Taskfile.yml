@@ -81,6 +81,11 @@ tasks:
     cmds:
       - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" scripts/audit_token_budget.py
 
+  benchmark:search:
+    desc: Measure the 2,000-note Fundus rebuild and warm-search release target
+    cmds:
+      - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" scripts/benchmark_search.py --notes 2000 --iterations 25 --assert-p95-ms 100
+
   test:mcp-integration:
     desc: Exercise the source and exact packaged MCP commands with an independent client
     deps: [build:plugin]

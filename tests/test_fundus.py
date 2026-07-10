@@ -201,6 +201,8 @@ class IndexSearchTest(FundusTestCase):
         self.assertEqual(entry["project"], "demo")
         self.assertIn("Refined Ticket", entry["headings"])
         self.assertIn("article", entry["tokens"])
+        self.assertTrue(entry["revision"].startswith("sha256:"))
+        self.assertGreater(entry["size"], 0)
         self.assertTrue((self.vault_path / "Fundus" / fundus.INDEX_FILENAME).exists())
 
     def test_scan_uses_index_for_body_and_heading_matches(self) -> None:
@@ -303,6 +305,137 @@ class IndexSearchTest(FundusTestCase):
 
         self.assertTrue(status["stale"])
         self.assertEqual(status["stale_paths"], ["Fundus/demo/existing-ticket.md"])
+
+    def test_no_index_and_current_index_search_are_equivalent(self) -> None:
+        self.create_article("Architecture Alpha", "## Router Heading\n\nShared body phrase.", ["architecture"])
+        fundus.create_document(
+            self.config,
+            "demo",
+            "Prompt Boundary",
+            "## Context\n\nBACKEND-2291 prompt details.",
+            ["domain"],
+            aliases=["Workbench Alias"],
+            resource="https://jira.example/BACKEND-2291",
+        )
+        self.create_article("Café Résumé", "## Überprüfung\n\nUnicode naïve façade.", ["unicode"])
+        archived_path = self.create_article("Historical Ticket", "Archived searchable evidence.", ["ticket"])
+        fundus.archive_document(self.config, str(archived_path.relative_to(self.vault_path)), "historical")
+        redirect_source = fundus.create_document(
+            self.config,
+            "demo",
+            "Redirect Source",
+            "Redirect-only phrase.",
+            ["redirect-test"],
+        )
+        fundus.move_document(
+            self.config,
+            redirect_source["path"],
+            "Fundus/Epics/Search Quality/redirect-source.md",
+            leave_stub=True,
+        )
+        queries = [
+            ("router heading", False),
+            ("shared body phrase", False),
+            ("BACKEND-2291", False),
+            ("workbench alias", False),
+            ("jira example", False),
+            ("café résumé", False),
+            ("unicode naïve façade", False),
+            ("archived searchable", True),
+            (None, False),
+        ]
+
+        without_index = {
+            (query, archived): fundus.scan_documents(
+                self.config,
+                "demo",
+                query,
+                include_archived=archived,
+                include_snippet=True,
+            )
+            for query, archived in queries
+        }
+        fundus.rebuild_index(self.config)
+        with_index = {
+            (query, archived): fundus.scan_documents(
+                self.config,
+                "demo",
+                query,
+                include_archived=archived,
+                include_snippet=True,
+            )
+            for query, archived in queries
+        }
+
+        self.assertEqual(with_index, without_index)
+        self.assertFalse(any(result["path"] == redirect_source["path"] for results in with_index.values() for result in results))
+        self.assertTrue(all(result["revision"].startswith("sha256:") for results in with_index.values() for result in results))
+
+    def test_search_repairs_external_edit_add_and_delete_in_memory(self) -> None:
+        changed_path = self.create_article("Externally Changed", "Old indexed phrase.", ["ticket"])
+        deleted_path = self.create_article("Externally Deleted", "Deletedonlytoken.", ["ticket"])
+        fundus.rebuild_index(self.config)
+        index_file = self.vault_path / "Fundus" / fundus.INDEX_FILENAME
+        original_index_bytes = index_file.read_bytes()
+
+        changed_path.write_text(
+            changed_path.read_text().replace("Externally Changed", "Current External Title").replace(
+                "Old indexed phrase.", "Current external body phrase."
+            )
+        )
+        added_path = self.vault_path / "Fundus" / "demo" / "externally-added.md"
+        added_frontmatter = fundus.frontmatter_for_new_document(
+            self.config,
+            "demo",
+            fundus.project_scope("demo"),
+            "Externally Added",
+            ["ticket"],
+        )
+        added_path.write_text(fundus.render_document(added_frontmatter, "Newlyindexedaddition phrase."))
+        deleted_path.unlink()
+
+        changed_results = fundus.scan_documents(self.config, "demo", "current external body")
+        added_results = fundus.scan_documents(self.config, "demo", "newlyindexedaddition")
+        deleted_results = fundus.scan_documents(self.config, "demo", "deletedonlytoken")
+
+        self.assertEqual(changed_results[0]["title"], "Current External Title")
+        self.assertEqual([result["path"] for result in added_results], ["Fundus/demo/externally-added.md"])
+        self.assertEqual(deleted_results, [])
+        self.assertEqual(index_file.read_bytes(), original_index_bytes)
+        self.assertTrue(fundus.index_status(self.config)["stale"])
+
+    def test_corrupt_and_incompatible_indexes_fall_back_without_writing(self) -> None:
+        self.create_article("Fallback Search", "Corrupt index fallback phrase.", ["ticket"])
+        index_file = self.vault_path / "Fundus" / fundus.INDEX_FILENAME
+        expected = fundus.scan_documents(self.config, "demo", "fallback phrase")
+
+        corrupt = b"{not-json\n"
+        index_file.write_bytes(corrupt)
+        corrupt_results = fundus.scan_documents(self.config, "demo", "fallback phrase")
+        corrupt_status = fundus.index_status(self.config)
+        self.assertEqual(corrupt_results, expected)
+        self.assertEqual(index_file.read_bytes(), corrupt)
+        self.assertEqual(corrupt_status["state"], "corrupt")
+        self.assertFalse(corrupt_status["valid"])
+
+        incompatible = b'{"version": 999, "documents": []}\n'
+        index_file.write_bytes(incompatible)
+        incompatible_results = fundus.scan_documents(self.config, "demo", "fallback phrase")
+        incompatible_status = fundus.index_status(self.config)
+        self.assertEqual(incompatible_results, expected)
+        self.assertEqual(index_file.read_bytes(), incompatible)
+        self.assertEqual(incompatible_status["state"], "incompatible")
+
+    def test_equal_score_results_have_deterministic_title_path_order(self) -> None:
+        self.create_article("Zulu Candidate", "Shared deterministic phrase.", ["ticket"])
+        self.create_article("Alpha Candidate", "Shared deterministic phrase.", ["ticket"])
+
+        direct = fundus.scan_documents(self.config, "demo", "shared deterministic")
+        fundus.rebuild_index(self.config)
+        indexed = fundus.scan_documents(self.config, "demo", "shared deterministic")
+
+        self.assertEqual([result["title"] for result in direct], ["Alpha Candidate", "Zulu Candidate"])
+        self.assertEqual(indexed, direct)
 
 
 class ArchiveDocumentTest(FundusTestCase):

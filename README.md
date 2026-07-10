@@ -8,6 +8,8 @@ Existing Fundus documents can be updated by appending content, replacing a named
 Created documents keep one generated top-level title heading; duplicate matching H1 headings in supplied content are removed automatically.
 Search is accelerated by a lightweight JSON index at `{vault_path}/{fundus_dir}/.fundus-index.json`. Every search checks relevant file fingerprints, repairs changed or added records in memory, drops deleted paths, and uses the same scorer with or without an index. Old notes can be archived reversibly under `{vault_path}/{fundus_dir}/_archive/...`, with nested area paths mirrored under the archive root.
 
+Reads and search results include a SHA-256 revision. Pass that value as `--expected-revision` for overwrite-like operations so a human edit made after the read produces `REVISION_CONFLICT` without being overwritten. Fundus serializes note-plus-index writes across processes and journals multi-file moves for rollback or next-run recovery.
+
 ## Current Direction
 
 Fundus is being refined into Christian's personal Codex workbench for durable work knowledge. The workbench should stay explicit: use it to search, save, retrieve, update, and curate Fundus knowledge. During ticket or research work, Codex may also do a read-only Fundus lookup when prior context is likely useful.
@@ -230,6 +232,16 @@ python dist/fundus/scripts/fundus.py backup inspect --id 20260709T103010+0200-pr
 ```
 
 Backups are stored under `{vault_path}/.fundus-backups/`, outside the indexed `Fundus/` tree. Each backup includes a manifest with file counts, byte counts, and SHA-256 checksums.
+
+Verify or dry-run a full restore before applying it:
+
+```bash
+python dist/fundus/scripts/fundus.py backup verify --id BACKUP_ID
+python dist/fundus/scripts/fundus.py backup restore --id BACKUP_ID
+python dist/fundus/scripts/fundus.py backup restore --id BACKUP_ID --apply
+```
+
+Apply verifies every checksum first, creates a safety backup of the current corpus, restores under the corpus lock and recovery journal, rebuilds the index, and commits only after corpus verification.
 
 ## Wiki To Fundus Migration
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import multiprocessing
 import os
 import shutil
 import sys
@@ -16,6 +18,38 @@ assert SPEC and SPEC.loader
 fundus = importlib.util.module_from_spec(SPEC)
 sys.modules["fundus"] = fundus
 SPEC.loader.exec_module(fundus)
+
+
+def concurrent_update_worker(
+    vault_path: str,
+    note_path: str,
+    expected_revision: str,
+    content: str,
+    start_event: object,
+    result_queue: object,
+) -> None:
+    config = fundus.Config(
+        vault_path=Path(vault_path),
+        fundus_dir="Fundus",
+        default_tags=["fundus"],
+        redaction_enabled=True,
+        redaction_patterns=[],
+    )
+    start_event.wait(10)
+    try:
+        result = fundus.update_document(
+            config,
+            "demo",
+            note_path,
+            "append",
+            content,
+            None,
+            fundus.project_scope("demo"),
+            expected_revision,
+        )
+        result_queue.put(("ok", result["revision"]))
+    except fundus.FundusError as exc:
+        result_queue.put(("error", exc.code))
 
 
 class FundusTestCase(unittest.TestCase):
@@ -1076,6 +1110,257 @@ class BackupTest(FundusTestCase):
         self.assertFalse(any(fundus.BACKUP_DIRNAME in file["path"] for file in manifest["files"]))
 
 
+class MutationSafetyTest(FundusTestCase):
+    def create_article(self, title: str, body: str = "Body") -> tuple[dict[str, object], Path]:
+        result = fundus.create_document(self.config, "demo", title, body, ["ticket"])
+        return result, self.vault_path / str(result["path"])
+
+    def test_read_result_and_search_return_same_revision(self) -> None:
+        created, _ = self.create_article("Revision Note")
+
+        read = fundus.read_document_result(self.config, str(created["path"]))
+        search = fundus.scan_documents(self.config, "demo", "Revision Note")
+
+        self.assertEqual(read["revision"], created["revision"])
+        self.assertEqual(search[0]["revision"], created["revision"])
+        self.assertEqual(read["resolved_path"], created["path"])
+
+    def test_external_edit_causes_revision_conflict_without_write(self) -> None:
+        created, path = self.create_article("Conflict Note", "Original body")
+        path.write_text(path.read_text() + "\nHuman edit.\n")
+        human_bytes = path.read_bytes()
+
+        with self.assertRaises(fundus.FundusError) as raised:
+            fundus.update_document(
+                self.config,
+                "demo",
+                str(created["path"]),
+                "rewrite",
+                "Agent overwrite",
+                None,
+                fundus.project_scope("demo"),
+                str(created["revision"]),
+            )
+
+        self.assertEqual(raised.exception.code, "REVISION_CONFLICT")
+        self.assertEqual(path.read_bytes(), human_bytes)
+        self.assertFalse(fundus.lock_path(self.config).exists())
+
+    def test_lock_timeout_release_and_stale_recovery(self) -> None:
+        lock = fundus.lock_path(self.config)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(
+            json.dumps(
+                {
+                    "token": "live",
+                    "pid": os.getpid(),
+                    "hostname": fundus.socket.gethostname(),
+                    "created": fundus.now_iso(),
+                    "created_epoch": fundus.time.time(),
+                }
+            )
+        )
+        with self.assertRaises(fundus.FundusError) as timeout:
+            with fundus.CorpusMutationLock(self.config, timeout_seconds=0.05, stale_after_seconds=30):
+                pass
+        self.assertEqual(timeout.exception.code, "LOCK_TIMEOUT")
+        lock.unlink()
+
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(
+            json.dumps(
+                {
+                    "token": "stale",
+                    "pid": 99999999,
+                    "hostname": fundus.socket.gethostname(),
+                    "created": "old",
+                    "created_epoch": fundus.time.time() - 3600,
+                }
+            )
+        )
+        with fundus.CorpusMutationLock(self.config, timeout_seconds=0.2, stale_after_seconds=1):
+            self.assertTrue(lock.exists())
+        self.assertFalse(lock.exists())
+
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            with fundus.CorpusMutationLock(self.config):
+                raise RuntimeError("boom")
+        self.assertFalse(lock.exists())
+
+    def test_pending_journal_is_recovered_on_next_mutation_lock(self) -> None:
+        _, path = self.create_article("Journal Recovery", "Original")
+        original = path.read_bytes()
+        with fundus.CorpusMutationLock(self.config):
+            journal = fundus.MutationJournal(self.config, "test-crash", [path])
+            journal.__enter__()
+            path.write_text("simulated partial write")
+
+        self.assertNotEqual(path.read_bytes(), original)
+        with fundus.CorpusMutationLock(self.config):
+            self.assertEqual(path.read_bytes(), original)
+        self.assertFalse(fundus.journal_root_dir(self.config).exists())
+
+    def test_move_archive_and_restore_roll_back_at_every_checkpoint(self) -> None:
+        fundus.rebuild_index(self.config)
+        operation_steps = {
+            "move": ["renamed", "metadata_written", "index_written"],
+            "archive": ["renamed", "metadata_written", "index_written"],
+            "restore": ["renamed", "metadata_written", "index_written"],
+        }
+
+        for operation, steps in operation_steps.items():
+            for step in steps:
+                with self.subTest(operation=operation, step=step):
+                    created, active_path = self.create_article(f"{operation} {step}", "Rollback body")
+                    if operation == "move":
+                        source_path = active_path
+                        destination_path = self.vault_path / "Fundus" / "other" / active_path.name
+                        invoke = lambda: fundus.move_document(
+                            self.config,
+                            str(created["path"]),
+                            str(destination_path.relative_to(self.vault_path)),
+                        )
+                    elif operation == "archive":
+                        source_path = active_path
+                        destination_path = self.vault_path / "Fundus" / "_archive" / "demo" / active_path.name
+                        invoke = lambda: fundus.archive_document(self.config, str(created["path"]), "test")
+                    else:
+                        archived = fundus.archive_document(self.config, str(created["path"]), "test")
+                        source_path = self.vault_path / str(archived["path"])
+                        destination_path = active_path
+                        invoke = lambda: fundus.restore_document(self.config, str(archived["path"]))
+
+                    source_bytes = source_path.read_bytes()
+                    index_bytes = fundus.index_path(self.config).read_bytes()
+
+                    def fail_at_checkpoint(reached_operation: str, reached_step: str) -> None:
+                        if reached_operation == operation and reached_step == step:
+                            raise RuntimeError(f"injected {operation}:{step}")
+
+                    fundus.MUTATION_FAILURE_INJECTOR = fail_at_checkpoint
+                    try:
+                        with self.assertRaisesRegex(RuntimeError, f"injected {operation}:{step}"):
+                            invoke()
+                    finally:
+                        fundus.MUTATION_FAILURE_INJECTOR = None
+
+                    self.assertTrue(source_path.exists())
+                    self.assertEqual(source_path.read_bytes(), source_bytes)
+                    self.assertFalse(destination_path.exists())
+                    self.assertEqual(fundus.index_path(self.config).read_bytes(), index_bytes)
+                    self.assertFalse(fundus.journal_root_dir(self.config).exists())
+
+    def test_multi_process_updates_preserve_index_and_reject_same_revision(self) -> None:
+        first, _ = self.create_article("Concurrent First", "First")
+        second, _ = self.create_article("Concurrent Second", "Second")
+        fundus.rebuild_index(self.config)
+        context = multiprocessing.get_context("spawn")
+
+        def run_workers(specs: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
+            start_event = context.Event()
+            result_queue = context.Queue()
+            processes = [
+                context.Process(
+                    target=concurrent_update_worker,
+                    args=(str(self.vault_path), path, revision, content, start_event, result_queue),
+                )
+                for path, revision, content in specs
+            ]
+            for process in processes:
+                process.start()
+            start_event.set()
+            results = [result_queue.get(timeout=15) for _ in processes]
+            for process in processes:
+                process.join(timeout=15)
+                self.assertEqual(process.exitcode, 0)
+            return results
+
+        different_results = run_workers(
+            [
+                (str(first["path"]), str(first["revision"]), "First worker"),
+                (str(second["path"]), str(second["revision"]), "Second worker"),
+            ]
+        )
+        self.assertEqual([status for status, _ in different_results], ["ok", "ok"])
+        self.assertFalse(fundus.index_status(self.config)["stale"])
+
+        same, _ = self.create_article("Concurrent Same", "Same")
+        same_results = run_workers(
+            [
+                (str(same["path"]), str(same["revision"]), "Winner one"),
+                (str(same["path"]), str(same["revision"]), "Winner two"),
+            ]
+        )
+        self.assertEqual(sorted(status for status, _ in same_results), ["error", "ok"])
+        self.assertEqual([value for status, value in same_results if status == "error"], ["REVISION_CONFLICT"])
+        self.assertFalse(fundus.index_status(self.config)["stale"])
+
+    def test_backup_verification_restore_and_corruption_guard(self) -> None:
+        created, path = self.create_article("Backup Restore", "Original snapshot body")
+        backup = fundus.create_backup(self.config, "restorable")
+        verification = fundus.verify_backup(self.config, backup["id"])
+        fundus.update_document(
+            self.config,
+            "demo",
+            str(created["path"]),
+            "rewrite",
+            "Changed after backup",
+            None,
+            fundus.project_scope("demo"),
+            str(created["revision"]),
+        )
+
+        plan = fundus.restore_backup(self.config, backup["id"])
+        restored = fundus.restore_backup(self.config, backup["id"], apply=True)
+
+        self.assertTrue(verification["verified"])
+        self.assertFalse(plan["apply"])
+        self.assertIn("Original snapshot body", path.read_text())
+        self.assertTrue(restored["corpus_verification"]["passed"])
+        self.assertTrue(fundus.inspect_backup(self.config, restored["safety_backup_id"]))
+
+        changed_revision = fundus.read_document_result(self.config, str(created["path"]))["revision"]
+        fundus.update_document(
+            self.config,
+            "demo",
+            str(created["path"]),
+            "rewrite",
+            "State before injected restore failure",
+            None,
+            fundus.project_scope("demo"),
+            changed_revision,
+        )
+        pre_failure_bytes = path.read_bytes()
+
+        def fail_restore(operation: str, step: str) -> None:
+            if operation == "backup-restore" and step == "snapshot_copied":
+                raise RuntimeError("injected backup restore")
+
+        fundus.MUTATION_FAILURE_INJECTOR = fail_restore
+        try:
+            with self.assertRaisesRegex(RuntimeError, "injected backup restore"):
+                fundus.restore_backup(self.config, backup["id"], apply=True)
+        finally:
+            fundus.MUTATION_FAILURE_INJECTOR = None
+        self.assertEqual(path.read_bytes(), pre_failure_bytes)
+        self.assertFalse(fundus.journal_root_dir(self.config).exists())
+
+        corrupt_backup = fundus.create_backup(self.config, "corrupt-me")
+        manifest = fundus.inspect_backup(self.config, corrupt_backup["id"])
+        note_entry = next(entry for entry in manifest["files"] if str(entry["path"]).endswith(".md"))
+        backup_note = Path(manifest["backup_path"]) / str(note_entry["path"])
+        backup_note.write_bytes(backup_note.read_bytes() + b"corruption")
+        current_bytes = path.read_bytes()
+
+        with self.assertRaises(fundus.FundusError) as corrupt:
+            fundus.verify_backup(self.config, corrupt_backup["id"])
+        with self.assertRaises(fundus.FundusError) as blocked_restore:
+            fundus.restore_backup(self.config, corrupt_backup["id"], apply=True)
+        self.assertEqual(corrupt.exception.code, "BACKUP_CORRUPT")
+        self.assertEqual(blocked_restore.exception.code, "BACKUP_CORRUPT")
+        self.assertEqual(path.read_bytes(), current_bytes)
+
+
 class MigrationTest(FundusTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -1197,6 +1482,29 @@ class MigrationTest(FundusTestCase):
         self.assertFalse((self.vault_path / "Wiki").exists())
         self.assertTrue(Path(resumed["retired_source_path"]).exists())
         self.assertFalse(fundus.index_status(self.config)["stale"])
+
+    def test_migration_promotion_failure_leaves_resumable_verified_destination(self) -> None:
+        self.write_legacy_project_note()
+
+        def fail_after_promotion(operation: str, step: str) -> None:
+            if operation == "migration" and step == "promoted":
+                raise RuntimeError("injected migration promotion")
+
+        fundus.MUTATION_FAILURE_INJECTOR = fail_after_promotion
+        try:
+            with self.assertRaisesRegex(RuntimeError, "injected migration promotion"):
+                fundus.apply_wiki_to_fundus_migration(self.config)
+        finally:
+            fundus.MUTATION_FAILURE_INJECTOR = None
+
+        self.assertTrue((self.vault_path / "Fundus" / "demo" / "legacy-ticket.md").exists())
+        self.assertTrue((self.vault_path / "Wiki").exists())
+
+        resumed = fundus.apply_wiki_to_fundus_migration(self.config)
+
+        self.assertTrue(resumed["resumed_existing_destination"])
+        self.assertTrue(resumed["verification"]["passed"])
+        self.assertFalse((self.vault_path / "Wiki").exists())
 
     def test_verify_fundus_corpus_reports_reserved_frontmatter_issue(self) -> None:
         (self.vault_path / "Fundus" / "demo").mkdir(parents=True)

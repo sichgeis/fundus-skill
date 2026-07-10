@@ -127,9 +127,13 @@ This in-memory repair policy keeps scan and its MCP wrapper read-only. The 2026-
 
 ### Current write behavior
 
-`atomic_write()` writes a temporary file in the destination directory and replaces the destination.
+`atomic_write()` flushes and fsyncs a temporary file in the destination directory before atomically replacing the destination. Read and search results include a `sha256:` revision. Overwrite-like operations accept `expected_revision`, check it while holding the mutation lock, and fail with `REVISION_CONFLICT` before writing when it differs.
 
-Current writes do not carry an expected revision and there is no corpus lock. Concurrent read-modify-write operations can therefore overwrite human changes or each other's index updates.
+A tested lock file under the vault's `.fundus-locks/` directory serializes note-plus-index mutations across processes. Acquisition has a bounded timeout, live-owner diagnostics, same-host dead-process stale recovery, same-thread reentrancy, and exception-safe release. Pure reads and dry-runs do not acquire it.
+
+Move, archive, restore, and backup restore snapshot every affected file plus the index in `.fundus-journal/`. They use atomic rename where a path changes, roll back injected failures immediately, and recover any prepared journal on the next mutation lock acquisition. Migration promotes only a fully verified staging tree; a failure after promotion leaves the supported resumable destination state.
+
+Backup manifests can be verified file-by-file by size and SHA-256. Restore is a dry-run by default; apply verifies first, creates a safety backup, restores under the lock and journal, rebuilds the index, and requires corpus verification before commit.
 
 ### Current frontmatter behavior
 

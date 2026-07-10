@@ -88,6 +88,20 @@ python /path/to/fundus/scripts/fundus.py normalize-frontmatter --global --apply
 
 Add `--include-archived` only when archived notes should be normalized too. Add `--add-missing` only when plain Markdown notes should receive generated OKF frontmatter.
 
+## Revisions And Conflicts
+
+`read` returns JSON containing `content`, `resolved_path`, and a `sha256:` revision. Scan results include the same revision. Pass it back to update, move, archive, restore, or add-frontmatter:
+
+```bash
+python /path/to/fundus/scripts/fundus.py update \
+  --path "Fundus/my-project/note.md" \
+  --mode append \
+  --content "New evidence" \
+  --expected-revision "sha256:..."
+```
+
+If the note changed after the read, Fundus returns `REVISION_CONFLICT` and writes nothing. Mutations serialize through a bounded cross-process corpus lock; move/archive/restore use recovery journals and atomic renames.
+
 ## Move
 
 ```bash
@@ -104,9 +118,12 @@ Project and area scope are classified from the destination path. The stable note
 python /path/to/fundus/scripts/fundus.py backup create --label pre-curation
 python /path/to/fundus/scripts/fundus.py backup list
 python /path/to/fundus/scripts/fundus.py backup inspect --id 20260709T103010+0200-pre-curation
+python /path/to/fundus/scripts/fundus.py backup verify --id BACKUP_ID
+python /path/to/fundus/scripts/fundus.py backup restore --id BACKUP_ID
+python /path/to/fundus/scripts/fundus.py backup restore --id BACKUP_ID --apply
 ```
 
-Backups are stored under `{vault_path}/.fundus-backups/` and are excluded from normal Fundus indexing.
+Backups are stored under `{vault_path}/.fundus-backups/` and are excluded from normal Fundus indexing. Restore is a dry-run unless `--apply` is present; apply verifies checksums, creates a current-state safety backup, uses the mutation journal, rebuilds the index, and verifies the restored corpus.
 
 ## Area Setup
 

@@ -3,15 +3,20 @@ from __future__ import annotations
 
 import argparse
 import copy
+import functools
 import hashlib
 import io
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -45,11 +50,16 @@ MAX_INDEX_EXCERPT_CHARS = 600
 MAX_SCAN_RESULTS = 20
 ARCHIVE_DIRNAME = "_archive"
 BACKUP_DIRNAME = ".fundus-backups"
+JOURNAL_DIRNAME = ".fundus-journal"
+LOCK_FILENAME = ".fundus.lock"
+LOCK_DIRNAME = ".fundus-locks"
+DEFAULT_LOCK_TIMEOUT_SECONDS = 5.0
+DEFAULT_STALE_LOCK_SECONDS = 30.0
 BACKUP_MANIFEST_FILENAME = "manifest.json"
 MIGRATION_STAGING_DIRNAME = ".fundus-migration-staging"
 DEFAULT_LEGACY_SOURCE_DIR = "Wiki"
 RESERVED_FILENAMES = {"index.md", "log.md"}
-RESERVED_FUNDUS_DIRNAMES = {ARCHIVE_DIRNAME, BACKUP_DIRNAME}
+RESERVED_FUNDUS_DIRNAMES = {ARCHIVE_DIRNAME, BACKUP_DIRNAME, JOURNAL_DIRNAME}
 ARCHIVE_DURABLE_TAGS = {"project-overview", "architecture", "runbook", "glossary"}
 ARCHIVE_BOOST_TAGS = {"ticket", "review", "investigation", "refinement"}
 AREA_SUBDIRECTORIES = [
@@ -628,9 +638,15 @@ def redact_secrets(text: str, config: Config) -> str:
 
 
 def atomic_write(path: Path, content: str) -> None:
+    atomic_write_bytes(path, content.encode("utf-8"))
+
+
+def atomic_write_bytes(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+    with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as tmp:
         tmp.write(content)
+        tmp.flush()
+        os.fsync(tmp.fileno())
         tmp_path = Path(tmp.name)
     tmp_path.replace(path)
 
@@ -643,10 +659,308 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def path_revision(path: Path) -> str:
+    return f"sha256:{file_sha256(path)}"
+
+
+def assert_expected_revision(path: Path, expected_revision: str | None) -> str:
+    actual_revision = path_revision(path)
+    if expected_revision is not None and expected_revision != actual_revision:
+        raise FundusError(
+            f"Revision conflict for {path.name}: expected {expected_revision}, found {actual_revision}.",
+            "REVISION_CONFLICT",
+        )
+    return actual_revision
+
+
+def lock_path(config: Config) -> Path:
+    lock_root = ensure_within(config.vault_path, config.vault_path / LOCK_DIRNAME)
+    identity = hashlib.sha256(config.fundus_dir.encode("utf-8")).hexdigest()[:12]
+    lock_name = slugify(config.fundus_dir.replace("/", "-"))
+    return ensure_within(lock_root, lock_root / f"{lock_name}-{identity}.lock")
+
+
+def journal_root_dir(config: Config) -> Path:
+    return ensure_within(fundus_root_dir(config), fundus_root_dir(config) / JOURNAL_DIRNAME)
+
+
+def process_is_alive(pid: int | None) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def read_lock_metadata(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+_LOCK_LOCAL = threading.local()
+
+
+class CorpusMutationLock:
+    def __init__(
+        self,
+        config: Config,
+        timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+        stale_after_seconds: float = DEFAULT_STALE_LOCK_SECONDS,
+    ) -> None:
+        self.config = config
+        self.timeout_seconds = timeout_seconds
+        self.stale_after_seconds = stale_after_seconds
+        self.path = lock_path(config)
+        self.token = uuid.uuid4().hex
+        self.reentrant = False
+
+    def __enter__(self) -> CorpusMutationLock:
+        held = getattr(_LOCK_LOCAL, "held", {})
+        key = str(self.path)
+        if key in held:
+            token, count = held[key]
+            held[key] = (token, count + 1)
+            _LOCK_LOCAL.held = held
+            self.token = token
+            self.reentrant = True
+            return self
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self.timeout_seconds
+        payload = {
+            "token": self.token,
+            "pid": os.getpid(),
+            "hostname": socket.gethostname(),
+            "created": now_iso(),
+            "created_epoch": time.time(),
+        }
+        encoded = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+        while True:
+            try:
+                descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                break
+            except FileExistsError:
+                metadata = read_lock_metadata(self.path)
+                try:
+                    age_seconds = max(0.0, time.time() - float(metadata.get("created_epoch") or self.path.stat().st_mtime))
+                except FileNotFoundError:
+                    continue
+                owner_alive = process_is_alive(metadata.get("pid") if isinstance(metadata.get("pid"), int) else None)
+                same_host = not metadata.get("hostname") or metadata.get("hostname") == socket.gethostname()
+                if age_seconds >= self.stale_after_seconds and same_host and not owner_alive:
+                    try:
+                        self.path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
+                if time.monotonic() >= deadline:
+                    raise FundusError(
+                        f"Timed out waiting for the Fundus mutation lock after {self.timeout_seconds:.3f}s.",
+                        "LOCK_TIMEOUT",
+                    )
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+        held[key] = (self.token, 1)
+        _LOCK_LOCAL.held = held
+        try:
+            recover_pending_mutations(self.config)
+        except Exception:
+            self._release_final()
+            held.pop(key, None)
+            _LOCK_LOCAL.held = held
+            raise
+        return self
+
+    def _release_final(self) -> None:
+        metadata = read_lock_metadata(self.path)
+        if metadata.get("token") == self.token:
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        held = getattr(_LOCK_LOCAL, "held", {})
+        key = str(self.path)
+        token, count = held.get(key, (self.token, 1))
+        if count > 1:
+            held[key] = (token, count - 1)
+            _LOCK_LOCAL.held = held
+            return
+        held.pop(key, None)
+        _LOCK_LOCAL.held = held
+        self._release_final()
+
+
+def mutation_lock_status(config: Config) -> dict[str, Any]:
+    path = lock_path(config)
+    if not path.exists():
+        return {"path": str(path), "locked": False}
+    metadata = read_lock_metadata(path)
+    try:
+        age_seconds = max(0.0, time.time() - float(metadata.get("created_epoch") or path.stat().st_mtime))
+    except FileNotFoundError:
+        return {"path": str(path), "locked": False}
+    pid = metadata.get("pid") if isinstance(metadata.get("pid"), int) else None
+    return {
+        "path": str(path),
+        "locked": True,
+        "pid": pid,
+        "hostname": metadata.get("hostname"),
+        "created": metadata.get("created"),
+        "age_seconds": round(age_seconds, 3),
+        "owner_alive": process_is_alive(pid),
+    }
+
+
+def serialized_mutation(function: Any) -> Any:
+    @functools.wraps(function)
+    def wrapper(config: Config, *args: Any, **kwargs: Any) -> Any:
+        with CorpusMutationLock(config):
+            return function(config, *args, **kwargs)
+
+    return wrapper
+
+
+def serialized_mutation_when(predicate: Any) -> Any:
+    def decorator(function: Any) -> Any:
+        @functools.wraps(function)
+        def wrapper(config: Config, *args: Any, **kwargs: Any) -> Any:
+            if not predicate(config, *args, **kwargs):
+                return function(config, *args, **kwargs)
+            with CorpusMutationLock(config):
+                return function(config, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+MUTATION_FAILURE_INJECTOR: Any | None = None
+
+
+def mutation_checkpoint(operation: str, step: str) -> None:
+    if MUTATION_FAILURE_INJECTOR is not None:
+        MUTATION_FAILURE_INJECTOR(operation, step)
+
+
+def restore_mutation_journal(config: Config, journal_dir: Path) -> None:
+    manifest_path = journal_dir / "manifest.json"
+    try:
+        manifest = load_json(manifest_path)
+    except FundusError as exc:
+        raise FundusError(f"Cannot recover mutation journal {journal_dir.name}.", "MUTATION_RECOVERY_FAILED") from exc
+    entries = manifest.get("entries")
+    if not isinstance(entries, list):
+        raise FundusError(f"Mutation journal is invalid: {journal_dir.name}", "MUTATION_RECOVERY_FAILED")
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise FundusError(f"Mutation journal entry is invalid: {journal_dir.name}", "MUTATION_RECOVERY_FAILED")
+        target = ensure_within(config.vault_path, config.vault_path / entry["path"], code="MUTATION_RECOVERY_FAILED")
+        if entry.get("existed"):
+            snapshot_name = str(entry.get("snapshot") or "")
+            snapshot = ensure_within(journal_dir, journal_dir / snapshot_name, code="MUTATION_RECOVERY_FAILED")
+            if not snapshot.is_file() or file_sha256(snapshot) != entry.get("sha256"):
+                raise FundusError(f"Mutation snapshot is missing or corrupt: {target}", "MUTATION_RECOVERY_FAILED")
+            atomic_write_bytes(target, snapshot.read_bytes())
+        elif target.exists():
+            if not target.is_file():
+                raise FundusError(f"Cannot roll back non-file mutation target: {target}", "MUTATION_RECOVERY_FAILED")
+            target.unlink()
+    shutil.rmtree(journal_dir)
+
+
+def recover_pending_mutations(config: Config) -> list[str]:
+    root = journal_root_dir(config)
+    if not root.exists():
+        return []
+    recovered: list[str] = []
+    for journal_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        restore_mutation_journal(config, journal_dir)
+        recovered.append(journal_dir.name)
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+    return recovered
+
+
+class MutationJournal:
+    def __init__(self, config: Config, operation: str, paths: list[Path]) -> None:
+        self.config = config
+        self.operation = operation
+        unique_paths = {ensure_within(config.vault_path, path) for path in paths}
+        self.paths = sorted(unique_paths, key=str)
+        self.id = f"{datetime.now().astimezone().strftime('%Y%m%dT%H%M%S%f%z')}-{operation}-{uuid.uuid4().hex[:8]}"
+        self.directory = journal_root_dir(config) / self.id
+
+    def __enter__(self) -> MutationJournal:
+        self.directory.mkdir(parents=True, exist_ok=False)
+        entries: list[dict[str, Any]] = []
+        for index, path in enumerate(self.paths):
+            relative_path = str(path.relative_to(self.config.vault_path))
+            if path.exists():
+                if not path.is_file():
+                    raise FundusError(f"Mutation journal only supports file targets: {path}", "MUTATION_JOURNAL_INVALID")
+                snapshot_name = f"snapshot-{index:04d}.bin"
+                snapshot = self.directory / snapshot_name
+                shutil.copy2(path, snapshot)
+                entries.append(
+                    {
+                        "path": relative_path,
+                        "existed": True,
+                        "snapshot": snapshot_name,
+                        "sha256": file_sha256(snapshot),
+                    }
+                )
+            else:
+                entries.append({"path": relative_path, "existed": False})
+        manifest = {
+            "id": self.id,
+            "operation": self.operation,
+            "created": now_iso(),
+            "state": "prepared",
+            "entries": entries,
+        }
+        atomic_write(self.directory / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        return self
+
+    def commit(self) -> None:
+        shutil.rmtree(self.directory)
+        try:
+            self.directory.parent.rmdir()
+        except OSError:
+            pass
+
+    def rollback(self) -> None:
+        restore_mutation_journal(self.config, self.directory)
+        try:
+            self.directory.parent.rmdir()
+        except OSError:
+            pass
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+
+
 def backup_id_for(label: str | None, timestamp: datetime | None = None) -> str:
     created = timestamp or datetime.now().astimezone()
     suffix = slugify(label or "backup")
-    return f"{created.strftime('%Y%m%dT%H%M%S%z')}-{suffix}"
+    return f"{created.strftime('%Y%m%dT%H%M%S%f%z')}-{suffix}"
 
 
 def iter_backup_source_files(config: Config, root: Path | None = None) -> list[Path]:
@@ -658,12 +972,13 @@ def iter_backup_source_files(config: Config, root: Path | None = None) -> list[P
         if not path.is_file():
             continue
         relative_parts = path.relative_to(root).parts
-        if any(part == BACKUP_DIRNAME for part in relative_parts):
+        if any(part in {BACKUP_DIRNAME, JOURNAL_DIRNAME} for part in relative_parts) or path.name == LOCK_FILENAME:
             continue
         files.append(path)
     return sorted(files)
 
 
+@serialized_mutation
 def create_backup_for_root(config: Config, source_root: Path, source_dir_name: str, label: str | None = None) -> dict[str, Any]:
     created_at = datetime.now().astimezone()
     backup_id = backup_id_for(label, created_at)
@@ -743,6 +1058,105 @@ def inspect_backup(config: Config, backup_id: str) -> dict[str, Any]:
     manifest = load_json(manifest_path)
     manifest["manifest_path"] = str(manifest_path)
     return manifest
+
+
+def verify_backup(config: Config, backup_id: str) -> dict[str, Any]:
+    manifest = inspect_backup(config, backup_id)
+    backup_directory = ensure_within(
+        backup_root_dir(config),
+        backup_root_dir(config) / backup_id,
+        code="BACKUP_INVALID",
+    )
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise FundusError("Backup manifest files must be a list.", "BACKUP_INVALID")
+    seen_paths: set[str] = set()
+    verified_bytes = 0
+    for entry in files:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise FundusError("Backup manifest contains an invalid file entry.", "BACKUP_INVALID")
+        relative_path = entry["path"]
+        if relative_path in seen_paths:
+            raise FundusError(f"Backup manifest contains a duplicate path: {relative_path}", "BACKUP_INVALID")
+        seen_paths.add(relative_path)
+        backup_file = ensure_within(backup_directory, backup_directory / relative_path, code="BACKUP_INVALID")
+        if not backup_file.is_file():
+            raise FundusError(f"Backup file is missing: {relative_path}", "BACKUP_CORRUPT")
+        size = backup_file.stat().st_size
+        if size != entry.get("size") or file_sha256(backup_file) != entry.get("sha256"):
+            raise FundusError(f"Backup checksum mismatch: {relative_path}", "BACKUP_CORRUPT")
+        verified_bytes += size
+    if len(files) != manifest.get("file_count") or verified_bytes != manifest.get("byte_count"):
+        raise FundusError("Backup manifest totals do not match verified files.", "BACKUP_CORRUPT")
+    return {
+        "id": backup_id,
+        "verified": True,
+        "file_count": len(files),
+        "byte_count": verified_bytes,
+        "source_fundus_dir": manifest.get("source_fundus_dir"),
+        "manifest_path": manifest["manifest_path"],
+    }
+
+
+@serialized_mutation_when(lambda config, backup_id, apply=False: apply)
+def restore_backup(config: Config, backup_id: str, apply: bool = False) -> dict[str, Any]:
+    verification = verify_backup(config, backup_id)
+    manifest = inspect_backup(config, backup_id)
+    source_fundus_dir = str(manifest.get("source_fundus_dir") or "")
+    if source_fundus_dir != config.fundus_dir:
+        raise FundusError(
+            f"Backup targets '{source_fundus_dir}', not configured Fundus directory '{config.fundus_dir}'.",
+            "BACKUP_TARGET_MISMATCH",
+        )
+    target_paths = {
+        ensure_within(fundus_root_dir(config), config.vault_path / str(entry["path"]), code="BACKUP_INVALID")
+        for entry in manifest["files"]
+    }
+    current_paths = set(iter_backup_source_files(config, fundus_root_dir(config)))
+    plan = {
+        "id": backup_id,
+        "apply": apply,
+        "verified": True,
+        "restore_count": len(target_paths),
+        "remove_count": len(current_paths - target_paths),
+        "verification": verification,
+    }
+    if not apply:
+        return plan
+
+    safety_backup = create_backup(config, f"pre-restore-{backup_id}")
+    backup_directory = backup_root_dir(config) / backup_id
+    with MutationJournal(
+        config,
+        "backup-restore",
+        [*current_paths, *target_paths, index_path(config)],
+    ):
+        for current_path in sorted(current_paths - target_paths):
+            current_path.unlink()
+        mutation_checkpoint("backup-restore", "obsolete_files_removed")
+        for entry in manifest["files"]:
+            destination = ensure_within(
+                fundus_root_dir(config),
+                config.vault_path / str(entry["path"]),
+                code="BACKUP_INVALID",
+            )
+            source = ensure_within(backup_directory, backup_directory / str(entry["path"]), code="BACKUP_INVALID")
+            atomic_write_bytes(destination, source.read_bytes())
+        mutation_checkpoint("backup-restore", "snapshot_copied")
+        rebuild_index(config)
+        corpus_verification = verify_fundus_corpus(config)
+        if not corpus_verification["passed"]:
+            raise FundusError(
+                f"Restored backup failed corpus verification: {corpus_verification['issues']}",
+                "BACKUP_RESTORE_INVALID",
+            )
+        mutation_checkpoint("backup-restore", "verified")
+    return {
+        **plan,
+        "safety_backup_id": safety_backup["id"],
+        "corpus_verification": corpus_verification,
+        "index": index_status(config),
+    }
 
 
 def load_document(path: Path, vault_root: Path) -> Document:
@@ -912,6 +1326,7 @@ def iter_fundus_markdown_paths(config: Config) -> list[Path]:
         for path in root.rglob("*.md")
         if ARCHIVE_DIRNAME not in path.relative_to(root).parts
         and BACKUP_DIRNAME not in path.relative_to(root).parts
+        and JOURNAL_DIRNAME not in path.relative_to(root).parts
     ]
     archive_paths = list(fundus_archive_dir(config).rglob("*.md")) if fundus_archive_dir(config).exists() else []
     return sorted([*active_paths, *archive_paths])
@@ -962,6 +1377,7 @@ def write_index(config: Config, documents: list[dict[str, Any]]) -> dict[str, An
     return payload
 
 
+@serialized_mutation
 def rebuild_index(config: Config) -> dict[str, Any]:
     documents: list[dict[str, Any]] = []
     for path in iter_fundus_markdown_paths(config):
@@ -1141,6 +1557,8 @@ def validate_markdown_note_path(
 ) -> None:
     if not relative_parts:
         raise FundusError("A Fundus note path must not be the Fundus root.", "NOTE_PATH_INVALID")
+    if relative_parts[0] in {BACKUP_DIRNAME, JOURNAL_DIRNAME}:
+        raise FundusError("Fundus internal-state paths are not note paths.", "NOTE_PATH_INVALID")
     if path.suffix.casefold() != ".md":
         raise FundusError("Fundus note paths must use the .md suffix.", "NOTE_PATH_INVALID")
     if path.exists() and not path.is_file():
@@ -1377,6 +1795,7 @@ def frontmatter_for_new_document(
     return frontmatter
 
 
+@serialized_mutation
 def create_document(
     config: Config,
     project_name: str,
@@ -1427,6 +1846,7 @@ def create_document(
         "updated": frontmatter["updated"],
         "scope": active_scope.kind,
         "scope_path": active_scope.path,
+        "revision": path_revision(path),
         "warnings": [],
     }
 
@@ -1472,6 +1892,7 @@ def replace_section(existing_body: str, section: str, new_content: str) -> str:
     return "\n".join(updated_lines).strip()
 
 
+@serialized_mutation
 def update_document(
     config: Config,
     project_name: str,
@@ -1480,10 +1901,12 @@ def update_document(
     new_content: str,
     section: str | None,
     scope: Scope | None = None,
+    expected_revision: str | None = None,
 ) -> dict[str, Any]:
     path = resolve_active_note_path(config, path_arg)
     if not path.exists():
         raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
+    previous_revision = assert_expected_revision(path, expected_revision)
 
     text = read_note_text(path)
     frontmatter, body = parse_frontmatter(text)
@@ -1516,6 +1939,8 @@ def update_document(
         "updated": frontmatter.get("updated"),
         "mode": mode,
         "section": section,
+        "previous_revision": previous_revision,
+        "revision": path_revision(path),
     }
 
 
@@ -1544,17 +1969,30 @@ def resolve_redirect_document_path(config: Config, path: Path, max_hops: int = 3
     raise FundusError(f"Redirect chain exceeds {max_hops} hops.", "REDIRECT_LOOP")
 
 
-def read_document(config: Config, path_arg: str) -> str:
+def read_document_result(config: Config, path_arg: str) -> dict[str, Any]:
     path = resolve_fundus_note_path(config, path_arg)
     if not path.exists():
         raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
-    return read_note_text(resolve_redirect_document_path(config, path))
+    resolved_path = resolve_redirect_document_path(config, path)
+    return {
+        "path": str(path.relative_to(config.vault_path)),
+        "resolved_path": str(resolved_path.relative_to(config.vault_path)),
+        "content": read_note_text(resolved_path),
+        "revision": path_revision(resolved_path),
+        "redirected": resolved_path != path,
+    }
+
+
+def read_document(config: Config, path_arg: str) -> str:
+    """Compatibility helper returning only content; operation surfaces use read_document_result."""
+    return str(read_document_result(config, path_arg)["content"])
 
 
 def filesystem_timestamp(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat()
 
 
+@serialized_mutation
 def add_frontmatter_to_document(
     config: Config,
     project_name: str,
@@ -1570,10 +2008,12 @@ def add_frontmatter_to_document(
     status: str | None = None,
     owner: str | None = None,
     last_verified: str | None = None,
+    expected_revision: str | None = None,
 ) -> dict[str, Any]:
     path = resolve_active_note_path(config, path_arg)
     if not path.exists():
         raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
+    previous_revision = assert_expected_revision(path, expected_revision)
 
     text = read_note_text(path)
     existing_frontmatter, body = parse_frontmatter(text)
@@ -1611,6 +2051,8 @@ def add_frontmatter_to_document(
         "created": frontmatter["created"],
         "updated": frontmatter["updated"],
         "tags": frontmatter["tags"],
+        "previous_revision": previous_revision,
+        "revision": path_revision(path),
     }
 
 
@@ -1690,11 +2132,13 @@ def render_existing_document_preserving_body(frontmatter: dict[str, Any], body: 
     return f"{format_frontmatter(frontmatter)}{frontmatter_newline(frontmatter)}{body}"
 
 
+@serialized_mutation_when(lambda config, path, apply=False, add_missing=False, expected_revision=None: apply)
 def normalize_frontmatter_for_path(
     config: Config,
     path: Path,
     apply: bool = False,
     add_missing: bool = False,
+    expected_revision: str | None = None,
 ) -> dict[str, Any]:
     safe_path = resolve_fundus_note_path(config, str(path))
     if safe_path.suffix != ".md":
@@ -1702,6 +2146,7 @@ def normalize_frontmatter_for_path(
     ensure_within(fundus_root_dir(config), safe_path)
     if not safe_path.exists():
         raise FundusError(f"Document does not exist: {path}")
+    previous_revision = assert_expected_revision(safe_path, expected_revision)
 
     text = read_note_text(safe_path)
     frontmatter, body = parse_frontmatter(text)
@@ -1767,12 +2212,17 @@ def normalize_frontmatter_for_path(
         "physical_parent": classification.physical_parent,
         "scope_relative_path": classification.scope_relative_path,
         "scope_path_change": scope_path_change,
+        "previous_revision": previous_revision,
+        "revision": path_revision(safe_path),
         "body_sha256": body_sha256,
         "body_unchanged": body_unchanged,
         "changes": changes,
     }
 
 
+@serialized_mutation_when(
+    lambda config, project_name, scope, path_arg=None, global_scope=False, include_archived=False, apply=False, add_missing=False, limit=None: apply
+)
 def normalize_frontmatter_paths(
     config: Config,
     project_name: str,
@@ -1799,6 +2249,7 @@ def normalize_frontmatter_paths(
             path
             for path in sorted(root.rglob("*.md"))
             if BACKUP_DIRNAME not in path.relative_to(root).parts
+            and JOURNAL_DIRNAME not in path.relative_to(root).parts
             and (include_archived or ARCHIVE_DIRNAME not in path.relative_to(root).parts)
         ]
         scope_name = "global"
@@ -1951,6 +2402,7 @@ def remove_empty_directory(directory: Path, protected_directories: set[Path]) ->
     return True
 
 
+@serialized_mutation
 def cleanup_empty_directories(
     config: Config,
     project_name: str,
@@ -1989,10 +2441,17 @@ def cleanup_empty_directories(
     }
 
 
-def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[str, Any]:
+@serialized_mutation
+def archive_document(
+    config: Config,
+    path_arg: str,
+    reason: str | None,
+    expected_revision: str | None = None,
+) -> dict[str, Any]:
     source_path = resolve_active_note_path(config, path_arg)
     if not source_path.exists():
         raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
+    previous_revision = assert_expected_revision(source_path, expected_revision)
 
     doc = load_document(source_path, config.vault_path)
     if not doc.frontmatter:
@@ -2014,11 +2473,19 @@ def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[
     frontmatter["archived_reason"] = reason or "archived"
     frontmatter["original_path"] = doc.relative_path
 
-    atomic_write(destination_path, render_existing_document_preserving_body(frontmatter, doc.body))
-    source_path.unlink()
-    active_directory_removed = remove_empty_directory(source_path.parent, {fundus_root_dir(config), fundus_archive_dir(config)})
-    refresh_index_entry(config, source_path)
-    refresh_index_entry(config, destination_path)
+    with MutationJournal(config, "archive", [source_path, destination_path, index_path(config)]):
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.replace(destination_path)
+        mutation_checkpoint("archive", "renamed")
+        atomic_write(destination_path, render_existing_document_preserving_body(frontmatter, doc.body))
+        mutation_checkpoint("archive", "metadata_written")
+        active_directory_removed = remove_empty_directory(
+            source_path.parent,
+            {fundus_root_dir(config), fundus_archive_dir(config)},
+        )
+        refresh_index_entry(config, source_path)
+        refresh_index_entry(config, destination_path)
+        mutation_checkpoint("archive", "index_written")
     return {
         "path": str(destination_path.relative_to(config.vault_path)),
         "original_path": doc.relative_path,
@@ -2026,13 +2493,21 @@ def archive_document(config: Config, path_arg: str, reason: str | None) -> dict[
         "archived_at": timestamp,
         "reason": frontmatter["archived_reason"],
         "active_directory_removed": active_directory_removed,
+        "previous_revision": previous_revision,
+        "revision": path_revision(destination_path),
     }
 
 
-def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
+@serialized_mutation
+def restore_document(
+    config: Config,
+    path_arg: str,
+    expected_revision: str | None = None,
+) -> dict[str, Any]:
     archive_path = resolve_archived_note_path(config, path_arg)
     if not archive_path.exists():
         raise FundusError(f"Document does not exist: {path_arg}", "NOTE_NOT_FOUND")
+    previous_revision = assert_expected_revision(archive_path, expected_revision)
 
     doc = load_document(archive_path, config.vault_path)
     if not doc.frontmatter:
@@ -2055,20 +2530,31 @@ def restore_document(config: Config, path_arg: str) -> dict[str, Any]:
     classification = classify_document_scope(config, destination_path, frontmatter)
     apply_canonical_scope_metadata(config, frontmatter, classification)
 
-    atomic_write(destination_path, render_existing_document_preserving_body(frontmatter, doc.body))
-    archive_path.unlink()
-    archive_directory_removed = remove_empty_directory(archive_path.parent, {fundus_archive_dir(config), fundus_root_dir(config)})
-    refresh_index_entry(config, archive_path)
-    refresh_index_entry(config, destination_path)
+    with MutationJournal(config, "restore", [archive_path, destination_path, index_path(config)]):
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        archive_path.replace(destination_path)
+        mutation_checkpoint("restore", "renamed")
+        atomic_write(destination_path, render_existing_document_preserving_body(frontmatter, doc.body))
+        mutation_checkpoint("restore", "metadata_written")
+        archive_directory_removed = remove_empty_directory(
+            archive_path.parent,
+            {fundus_archive_dir(config), fundus_root_dir(config)},
+        )
+        refresh_index_entry(config, archive_path)
+        refresh_index_entry(config, destination_path)
+        mutation_checkpoint("restore", "index_written")
     return {
         "path": str(destination_path.relative_to(config.vault_path)),
         "archived_path": doc.relative_path,
         "title": doc.title,
         "restored_at": timestamp,
         "archive_directory_removed": archive_directory_removed,
+        "previous_revision": previous_revision,
+        "revision": path_revision(destination_path),
     }
 
 
+@serialized_mutation
 def area_init(config: Config, project_name: str, area: str, area_type: str, title: str) -> dict[str, Any]:
     scope = area_scope(area)
     root = fundus_scope_dir(config, scope)
@@ -2179,11 +2665,19 @@ def redirect_frontmatter_for_move(
     return frontmatter
 
 
-def move_document(config: Config, source_arg: str, destination_arg: str, leave_stub: bool = False) -> dict[str, Any]:
+@serialized_mutation
+def move_document(
+    config: Config,
+    source_arg: str,
+    destination_arg: str,
+    leave_stub: bool = False,
+    expected_revision: str | None = None,
+) -> dict[str, Any]:
     source_path = resolve_active_note_path(config, source_arg)
     destination_path = resolve_active_note_path(config, destination_arg)
     if not source_path.exists():
         raise FundusError(f"Document does not exist: {source_arg}", "NOTE_NOT_FOUND")
+    previous_revision = assert_expected_revision(source_path, expected_revision)
     if destination_path.exists():
         raise FundusError(f"Move destination already exists: {destination_arg}")
     root = fundus_root_dir(config)
@@ -2202,23 +2696,28 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
     moved_frontmatter["moved_from"] = doc.relative_path
     apply_canonical_scope_metadata(config, moved_frontmatter, destination_classification)
 
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(destination_path, render_existing_document_preserving_body(moved_frontmatter, doc.body))
-    if leave_stub:
-        redirect_frontmatter = redirect_frontmatter_for_move(
-            config,
-            doc,
-            source_classification,
-            destination_path,
-        )
-        relative_target = Path(os.path.relpath(destination_path, start=source_path.parent)).as_posix()
-        stub_body = f"# {doc.title}\n\nMoved to [{destination_path.name}]({relative_target}).\n"
-        atomic_write(source_path, render_existing_document(redirect_frontmatter, stub_body))
-    else:
-        source_path.unlink()
-        remove_empty_directory(source_path.parent, {fundus_root_dir(config), fundus_archive_dir(config)})
-    refresh_index_entry(config, source_path)
-    refresh_index_entry(config, destination_path)
+    with MutationJournal(config, "move", [source_path, destination_path, index_path(config)]):
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.replace(destination_path)
+        mutation_checkpoint("move", "renamed")
+        atomic_write(destination_path, render_existing_document_preserving_body(moved_frontmatter, doc.body))
+        mutation_checkpoint("move", "metadata_written")
+        if leave_stub:
+            redirect_frontmatter = redirect_frontmatter_for_move(
+                config,
+                doc,
+                source_classification,
+                destination_path,
+            )
+            relative_target = Path(os.path.relpath(destination_path, start=source_path.parent)).as_posix()
+            stub_body = f"# {doc.title}\n\nMoved to [{destination_path.name}]({relative_target}).\n"
+            atomic_write(source_path, render_existing_document(redirect_frontmatter, stub_body))
+            mutation_checkpoint("move", "redirect_written")
+        else:
+            remove_empty_directory(source_path.parent, {fundus_root_dir(config), fundus_archive_dir(config)})
+        refresh_index_entry(config, source_path)
+        refresh_index_entry(config, destination_path)
+        mutation_checkpoint("move", "index_written")
     return {
         "path": str(destination_path.relative_to(config.vault_path)),
         "original_path": doc.relative_path,
@@ -2227,6 +2726,9 @@ def move_document(config: Config, source_arg: str, destination_arg: str, leave_s
         "scope": destination_classification.scope.kind,
         "scope_path": destination_classification.scope.path,
         "redirect_path": doc.relative_path if leave_stub else None,
+        "previous_revision": previous_revision,
+        "revision": path_revision(destination_path),
+        "redirect_revision": path_revision(source_path) if leave_stub else None,
     }
 
 
@@ -2588,6 +3090,7 @@ def verify_fundus_corpus(config: Config, destination_dir: str | None = None) -> 
     }
 
 
+@serialized_mutation
 def apply_wiki_to_fundus_migration(
     config: Config,
     source_dir: str = DEFAULT_LEGACY_SOURCE_DIR,
@@ -2680,6 +3183,7 @@ def apply_wiki_to_fundus_migration(
     if destination_root.exists():
         destination_root.rmdir()
     shutil.move(str(staging_destination), str(destination_root))
+    mutation_checkpoint("migration", "promoted")
     cleanup_empty_directories(config_with_fundus_dir(config, str(migration_staging_root_dir(config).relative_to(config.vault_path))), "", global_scope=True)
 
     repaired_archive_original_paths = repair_archive_original_paths(config, target_dir)
@@ -2687,10 +3191,12 @@ def apply_wiki_to_fundus_migration(
     final_verification = verify_fundus_corpus(config, target_dir)
     if not final_verification["passed"]:
         raise FundusError(f"Final migration verification failed: {final_verification['issues']}")
+    mutation_checkpoint("migration", "verified")
 
     retired_path = None
     if retire_source == "rename":
         retired_path = retire_migration_source(config, source_dir, migration_id)
+        mutation_checkpoint("migration", "source_retired")
 
     return {
         "migration_id": migration_id,
@@ -2755,6 +3261,12 @@ def doctor_report_for_scope(config: Config, project_root: Path, project_name: st
             "symlink_escape_protection": True,
         },
         "index": index_status(config),
+        "mutation_lock": mutation_lock_status(config),
+        "pending_mutation_journals": (
+            len([path for path in journal_root_dir(config).iterdir() if path.is_dir()])
+            if journal_root_dir(config).exists()
+            else 0
+        ),
         "writes_possible": root.exists() or os.access(config.vault_path, os.W_OK),
     }
 
@@ -2801,6 +3313,7 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("--section", help="Section heading to replace when using replace mode.")
     update_parser.add_argument("--content", help="Inline markdown content.")
     update_parser.add_argument("--content-file", help="Path to a markdown file containing the new content.")
+    update_parser.add_argument("--expected-revision", help="SHA-256 revision returned by read or scan.")
 
     frontmatter_parser = subparsers.add_parser("add-frontmatter", help="Add generated frontmatter to an existing plain Markdown note.")
     add_area_argument(frontmatter_parser)
@@ -2815,6 +3328,7 @@ def build_parser() -> argparse.ArgumentParser:
     frontmatter_parser.add_argument("--owner", help="Optional note owner.")
     frontmatter_parser.add_argument("--last-verified", help="Date or timestamp for the last source verification.")
     frontmatter_parser.add_argument("--tag", action="append", dest="tags", help="Additional tag to add.")
+    frontmatter_parser.add_argument("--expected-revision", help="SHA-256 revision returned by read or scan.")
 
     normalize_frontmatter_parser = subparsers.add_parser(
         "normalize-frontmatter",
@@ -2832,6 +3346,7 @@ def build_parser() -> argparse.ArgumentParser:
     move_parser.add_argument("--from", dest="source", required=True, help="Source Fundus document path relative to the vault root.")
     move_parser.add_argument("--to", dest="destination", required=True, help="Destination Fundus document path relative to the vault root.")
     move_parser.add_argument("--leave-stub", action="store_true", help="Leave a short moved-note stub at the old path.")
+    move_parser.add_argument("--expected-revision", help="SHA-256 revision returned by read or scan.")
 
     backup_parser = subparsers.add_parser("backup", help="Create and inspect Fundus backups.")
     backup_subparsers = backup_parser.add_subparsers(dest="backup_command", required=True)
@@ -2840,6 +3355,11 @@ def build_parser() -> argparse.ArgumentParser:
     backup_subparsers.add_parser("list", help="List available Fundus backups.")
     backup_inspect_parser = backup_subparsers.add_parser("inspect", help="Inspect one backup manifest.")
     backup_inspect_parser.add_argument("--id", required=True, help="Backup id returned by backup create or backup list.")
+    backup_verify_parser = backup_subparsers.add_parser("verify", help="Verify one backup against its checksums.")
+    backup_verify_parser.add_argument("--id", required=True, help="Backup id returned by backup create or backup list.")
+    backup_restore_parser = backup_subparsers.add_parser("restore", help="Dry-run or apply a verified full Fundus restore.")
+    backup_restore_parser.add_argument("--id", required=True, help="Backup id returned by backup create or backup list.")
+    backup_restore_parser.add_argument("--apply", action="store_true", help="Apply the restore after verification and a safety backup.")
 
     area_parser = subparsers.add_parser("area", help="Initialize explicit cross-repository Fundus areas.")
     area_subparsers = area_parser.add_subparsers(dest="area_command", required=True)
@@ -2875,8 +3395,10 @@ def build_parser() -> argparse.ArgumentParser:
     archive_apply_parser = archive_subparsers.add_parser("apply", help="Archive one explicitly selected Fundus note.")
     archive_apply_parser.add_argument("--path", required=True, help="Active Fundus document path relative to the vault root.")
     archive_apply_parser.add_argument("--reason", help="Reason stored in archive frontmatter.")
+    archive_apply_parser.add_argument("--expected-revision", help="SHA-256 revision returned by read or scan.")
     archive_restore_parser = archive_subparsers.add_parser("restore", help="Restore one archived Fundus note to its original path.")
     archive_restore_parser.add_argument("--path", required=True, help="Archived Fundus document path relative to the vault root.")
+    archive_restore_parser.add_argument("--expected-revision", help="SHA-256 revision returned by read or scan.")
     archive_cleanup_parser = archive_subparsers.add_parser("cleanup", help="Remove empty active and archived Fundus folders.")
     add_area_argument(archive_cleanup_parser)
     archive_cleanup_parser.add_argument("--global", dest="global_scope", action="store_true", help="Remove empty folders across all Fundus project folders.")
@@ -2921,7 +3443,7 @@ def main() -> int:
             return 0
 
         if args.command == "read":
-            print(read_document(config, args.path))
+            print(json.dumps(read_document_result(config, args.path), indent=2))
             return 0
 
         if args.command == "create":
@@ -2947,7 +3469,16 @@ def main() -> int:
 
         if args.command == "update":
             content = read_content_arg(args.content, args.content_file)
-            payload = update_document(config, project_name, args.path, args.mode, content, args.section, scope)
+            payload = update_document(
+                config,
+                project_name,
+                args.path,
+                args.mode,
+                content,
+                args.section,
+                scope,
+                args.expected_revision,
+            )
             print(json.dumps(payload, indent=2))
             return 0
 
@@ -2967,6 +3498,7 @@ def main() -> int:
                 args.status,
                 args.owner,
                 args.last_verified,
+                args.expected_revision,
             )
             print(json.dumps(payload, indent=2))
             return 0
@@ -2987,7 +3519,7 @@ def main() -> int:
             return 0
 
         if args.command == "move":
-            payload = move_document(config, args.source, args.destination, args.leave_stub)
+            payload = move_document(config, args.source, args.destination, args.leave_stub, args.expected_revision)
             print(json.dumps(payload, indent=2))
             return 0
 
@@ -3013,6 +3545,12 @@ def main() -> int:
                 return 0
             if args.backup_command == "inspect":
                 print(json.dumps(inspect_backup(config, args.id), indent=2))
+                return 0
+            if args.backup_command == "verify":
+                print(json.dumps(verify_backup(config, args.id), indent=2))
+                return 0
+            if args.backup_command == "restore":
+                print(json.dumps(restore_backup(config, args.id, args.apply), indent=2))
                 return 0
 
         if args.command == "area":
@@ -3081,10 +3619,10 @@ def main() -> int:
                 print(json.dumps(payload, indent=2))
                 return 0
             if args.archive_command == "apply":
-                print(json.dumps(archive_document(config, args.path, args.reason), indent=2))
+                print(json.dumps(archive_document(config, args.path, args.reason, args.expected_revision), indent=2))
                 return 0
             if args.archive_command == "restore":
-                print(json.dumps(restore_document(config, args.path), indent=2))
+                print(json.dumps(restore_document(config, args.path, args.expected_revision), indent=2))
                 return 0
             if args.archive_command == "cleanup":
                 print(json.dumps(cleanup_empty_directories(config, project_name, args.global_scope, scope), indent=2))

@@ -105,10 +105,10 @@ The P11 transport, lifecycle, package-shape, error-recovery, and independent-cli
 | P11 — MCP and Codex package conformance | done | critical | none |
 | P12 — Fundus path safety and corpus invariants | done | critical | none |
 | P13 — Search consistency and index freshness | done | critical | P12 |
-| P14 — Revisions, locking, and recoverable mutations | ready | critical | P12 |
+| P14 — Revisions, locking, and recoverable mutations | done | critical | P12 |
 | P15 — Frontmatter correctness | done | high | none |
 | P16 — Canonical scope and move semantics | done | high | P12, P15 |
-| P17 — Explicit operation and MCP tool contracts | planned | high | P11 |
+| P17 — Explicit operation and MCP tool contracts | ready | high | P11 |
 | P18 — Proposal/apply, duplicates, and provenance | planned | high | P14, P17 |
 | P19 — Configuration, portability, and packaging | planned | high | P11 |
 | P20 — Modularization, CI, and release readiness | planned | medium | P13-P19 |
@@ -433,7 +433,7 @@ Next phase:
 
 ## P14 — Revisions, locking, and recoverable mutations
 
-Status: ready
+Status: done
 
 ### Goal
 
@@ -441,29 +441,85 @@ Prevent lost updates and index corruption and make multi-step file operations re
 
 ### Required implementation
 
-- [ ] Return SHA-256 revision from read and relevant search results.
-- [ ] Add `expected_revision` to overwrite-like operations.
-- [ ] Return `REVISION_CONFLICT` without writing on mismatch.
-- [ ] Add a corpus mutation lock abstraction.
-- [ ] Lock note-plus-index mutations as one logical operation.
-- [ ] Add bounded lock timeouts and diagnostics.
-- [ ] Ensure locks release on exceptions.
-- [ ] Define stale-lock recovery.
-- [ ] Update archive, restore, and move for recoverable sequencing.
-- [ ] Prefer atomic rename over copy/unlink when safe.
-- [ ] Add rollback or a mutation journal for multi-step failures.
-- [ ] Add backup verification.
-- [ ] Add an explicit backup restore workflow or document why it is deferred.
-- [ ] Add multi-process tests.
+- [x] Return SHA-256 revision from read and relevant search results.
+- [x] Add `expected_revision` to overwrite-like operations.
+- [x] Return `REVISION_CONFLICT` without writing on mismatch.
+- [x] Add a corpus mutation lock abstraction.
+- [x] Lock note-plus-index mutations as one logical operation.
+- [x] Add bounded lock timeouts and diagnostics.
+- [x] Ensure locks release on exceptions.
+- [x] Define stale-lock recovery.
+- [x] Update archive, restore, and move for recoverable sequencing.
+- [x] Prefer atomic rename over copy/unlink when safe.
+- [x] Add rollback or a mutation journal for multi-step failures.
+- [x] Add backup verification.
+- [x] Add an explicit backup restore workflow or document why it is deferred.
+- [x] Add multi-process tests.
 
 ### Acceptance criteria
 
-- [ ] Human edit between read and update cannot be overwritten silently.
-- [ ] Concurrent updates to different notes preserve both index entries.
-- [ ] Concurrent updates to the same note result in one success and one conflict.
-- [ ] Failure injection leaves either original state or a documented recoverable journal.
-- [ ] Backup corruption is detected before restore.
-- [ ] `task verify` passes.
+- [x] Human edit between read and update cannot be overwritten silently.
+- [x] Concurrent updates to different notes preserve both index entries.
+- [x] Concurrent updates to the same note result in one success and one conflict.
+- [x] Failure injection leaves either original state or a documented recoverable journal.
+- [x] Backup corruption is detected before restore.
+- [x] `task verify` passes.
+
+### Completion evidence — 2026-07-10
+
+Files changed:
+
+- `scripts/fundus.py`
+- `scripts/fundus_mcp.py`
+- `tests/test_fundus.py`
+- `tests/test_fundus_mcp.py`
+- `SKILL.md`
+- `README.md`
+- `docs/reference/fundus-cli-reference.md`
+- `docs/implementation.md`
+- `docs/agent-implementation-tracker.md`
+
+Commands and results:
+
+```text
+python -m unittest tests.test_fundus.MutationSafetyTest
+# 7 tests passed, including spawned multi-process writers
+
+python -m unittest tests.test_fundus.MutationSafetyTest tests.test_fundus.MigrationTest
+# 13 tests passed
+
+python -m unittest tests.test_fundus tests.test_fundus_mcp
+# 107 tests passed
+
+task verify
+# packaged MCP integration 2/2 passed
+# full suite 114 tests passed; one expected package-only skip
+
+git diff --check
+# passed
+```
+
+Implemented evidence:
+
+- Read and search operation results expose SHA-256 revisions; overwrite-like CLI/MCP operations accept `expected_revision` and return `REVISION_CONFLICT` before any write on mismatch.
+- Fsync-backed atomic file replacement and a cross-process `O_EXCL` lock serialize note-plus-index read-modify-write sequences.
+- The lock has bounded timeout, owner diagnostics, same-host dead-process stale recovery, same-thread reentrancy, and exception-safe release; doctor reports current lock and journal state.
+- Spawned writers updating different notes preserve both fresh index entries; two writers using the same note revision produce exactly one success and one conflict.
+- Move, archive, and restore use atomic rename plus snapshot journals. Failure injection at every rename, metadata, redirect, and index checkpoint restores original files and index.
+- Prepared journals survive a simulated process crash and recover automatically on the next mutation lock.
+- Migration remains stage-and-verify before promotion; an injected post-promotion failure leaves a verified destination that the tested resume path completes safely.
+- Backup verify checks manifest totals, sizes, and SHA-256 for every file. Restore is dry-run by default and, on apply, verifies first, creates a safety backup, journals the full change, rebuilds the index, and verifies the corpus.
+- Injected backup-restore failure rolls back; corrupted backup content fails with `BACKUP_CORRUPT` before current corpus writes.
+- All tests used temporary vaults; no live corpus operation was run.
+
+Residual risks:
+
+- P17 will expose revision conflicts and other stable codes in structured MCP error results and consolidate operation annotations.
+- Locking assumes the local single-host vault model; cross-host shared-filesystem locking is intentionally outside the current product boundary.
+
+Next phase:
+
+- P17 — Explicit operation and MCP tool contracts is ready.
 
 ---
 
@@ -659,7 +715,7 @@ Next phase:
 
 ## P17 — Explicit operation and MCP tool contracts
 
-Status: planned
+Status: ready
 
 ### Goal
 

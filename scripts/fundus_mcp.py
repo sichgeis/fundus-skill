@@ -66,9 +66,9 @@ def scan_fundus(
     }
 
 
-def read_note(path: str, project_root: str | None = None) -> str:
+def read_note(path: str, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return fundus_core.read_document(context.config, path)
+    return fundus_core.read_document_result(context.config, path)
 
 
 def create_note(
@@ -114,9 +114,19 @@ def update_note(
     project: str | None = None,
     project_root: str | None = None,
     area: str | None = None,
+    expected_revision: str | None = None,
 ) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
-    return fundus_core.update_document(context.config, context.project_name, path, mode, content, section, context.scope)
+    return fundus_core.update_document(
+        context.config,
+        context.project_name,
+        path,
+        mode,
+        content,
+        section,
+        context.scope,
+        expected_revision,
+    )
 
 
 def add_frontmatter(
@@ -134,6 +144,7 @@ def add_frontmatter(
     project: str | None = None,
     project_root: str | None = None,
     area: str | None = None,
+    expected_revision: str | None = None,
 ) -> dict[str, Any]:
     context = resolve_context(project, project_root, area)
     return fundus_core.add_frontmatter_to_document(
@@ -151,6 +162,7 @@ def add_frontmatter(
         status,
         owner,
         last_verified,
+        expected_revision,
     )
 
 
@@ -179,9 +191,15 @@ def normalize_frontmatter(
     )
 
 
-def move_note(path: str, destination: str, leave_stub: bool = False, project_root: str | None = None) -> dict[str, Any]:
+def move_note(
+    path: str,
+    destination: str,
+    leave_stub: bool = False,
+    expected_revision: str | None = None,
+    project_root: str | None = None,
+) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return fundus_core.move_document(context.config, path, destination, leave_stub)
+    return fundus_core.move_document(context.config, path, destination, leave_stub, expected_revision)
 
 
 def backup_create(label: str | None = None, project_root: str | None = None) -> dict[str, Any]:
@@ -197,6 +215,16 @@ def backup_list(project_root: str | None = None) -> dict[str, Any]:
 def backup_inspect(id: str, project_root: str | None = None) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
     return fundus_core.inspect_backup(context.config, id)
+
+
+def backup_verify(id: str, project_root: str | None = None) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return fundus_core.verify_backup(context.config, id)
+
+
+def backup_restore(id: str, apply: bool = False, project_root: str | None = None) -> dict[str, Any]:
+    context = resolve_context(project_root=project_root)
+    return fundus_core.restore_backup(context.config, id, apply)
 
 
 def area_init(area: str, title: str, type: str = "Area", project: str | None = None, project_root: str | None = None) -> dict[str, Any]:
@@ -267,14 +295,23 @@ def archive_candidates(
     }
 
 
-def archive_apply(path: str, reason: str | None = None, project_root: str | None = None) -> dict[str, Any]:
+def archive_apply(
+    path: str,
+    reason: str | None = None,
+    expected_revision: str | None = None,
+    project_root: str | None = None,
+) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return fundus_core.archive_document(context.config, path, reason)
+    return fundus_core.archive_document(context.config, path, reason, expected_revision)
 
 
-def archive_restore(path: str, project_root: str | None = None) -> dict[str, Any]:
+def archive_restore(
+    path: str,
+    expected_revision: str | None = None,
+    project_root: str | None = None,
+) -> dict[str, Any]:
     context = resolve_context(project_root=project_root)
-    return fundus_core.restore_document(context.config, path)
+    return fundus_core.restore_document(context.config, path, expected_revision)
 
 
 def archive_cleanup(
@@ -338,6 +375,8 @@ TOOL_DESCRIPTIONS = {
     "backup_create": "Create a JSON-manifested backup of the current Fundus corpus.",
     "backup_list": "List available Fundus backups.",
     "backup_inspect": "Inspect a Fundus backup manifest.",
+    "backup_verify": "Verify every file in a Fundus backup against its manifest checksum.",
+    "backup_restore": "Dry-run or apply a verified Fundus backup restore with a safety snapshot.",
     "area_init": "Create an explicit cross-repository Fundus area skeleton.",
     "index_status": "Report whether the lightweight Fundus search index is current.",
     "index_rebuild": "Rebuild the lightweight Fundus search index.",
@@ -381,6 +420,7 @@ PARAMETER_DESCRIPTIONS = {
     "status": "Lifecycle status such as active or stale.",
     "owner": "Person or system responsible for keeping the note useful.",
     "last_verified": "Date when the note was last checked against source truth.",
+    "expected_revision": "SHA-256 revision returned by read or scan; mismatches fail without writing.",
     "mode": "Operation mode.",
     "section": "Markdown section heading to replace.",
     "apply": "Whether to write changes; false means dry-run.",
@@ -410,6 +450,8 @@ TOOL_FUNCTIONS = [
     backup_create,
     backup_list,
     backup_inspect,
+    backup_verify,
+    backup_restore,
     area_init,
     index_status,
     index_rebuild,

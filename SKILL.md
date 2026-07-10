@@ -46,6 +46,7 @@ Do not use Fundus when the user opts out, when the content is casual/non-work kn
 - Scan before creating. If a likely match exists, read it and update instead of creating a duplicate.
 - Use append or section replace for incremental additions.
 - Use rewrite only when old body content would remain misleading.
+- Carry the SHA-256 revision returned by read or scan into overwrite-like operations. Treat `REVISION_CONFLICT` as a signal to re-read and reconcile, never as permission to force an overwrite.
 - New active concept notes should have OKF-compatible frontmatter with strong title, useful description, scope, tags, aliases/resources when relevant, and citations when source material matters.
 - Active `index.md` and `log.md` are reserved files; concept metadata belongs in notes such as `overview.md`.
 - Move notes through the Fundus move operation so stable IDs, logical scope, and scope tags stay consistent. Use a redirect stub only when old paths must remain readable; redirects are not ordinary search evidence.

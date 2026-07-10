@@ -83,7 +83,8 @@ class McpWrapperTest(McpFundusTestCase):
         self.assertEqual(created["path"], "Fundus/demo/authentication-flow.md")
         self.assertEqual(scanned["project"], "demo")
         self.assertEqual(scanned["documents"][0]["title"], "Authentication Flow")
-        self.assertIn("Token handling details.", body)
+        self.assertIn("Token handling details.", body["content"])
+        self.assertTrue(body["revision"].startswith("sha256:"))
 
     def test_create_and_scan_area_note(self) -> None:
         created = fundus_mcp.create_note(
@@ -108,7 +109,7 @@ class McpWrapperTest(McpFundusTestCase):
         self.assertEqual(scanned["scope"], "area")
         self.assertEqual(scanned["scope_path"], "Epics/AI Agent Templates")
         self.assertEqual(scanned["documents"][0]["path"], created["path"])
-        self.assertIn("type: Epic", body)
+        self.assertIn("type: Epic", body["content"])
 
     def test_create_note_supports_retrieval_metadata(self) -> None:
         created = fundus_mcp.create_note(
@@ -132,8 +133,8 @@ class McpWrapperTest(McpFundusTestCase):
 
         self.assertEqual(scanned["documents"][0]["aliases"], ["Prompt Surface"])
         self.assertEqual(scanned["documents"][0]["last_verified"], "2026-07-09")
-        self.assertIn("aliases:", body)
-        self.assertIn("resource: https://jira.example/browse/BACKEND-2291", body)
+        self.assertIn("aliases:", body["content"])
+        self.assertIn("resource: https://jira.example/browse/BACKEND-2291", body["content"])
 
     def test_update_note_redacts_and_refreshes_existing_index(self) -> None:
         created = fundus_mcp.create_note(
@@ -161,8 +162,8 @@ class McpWrapperTest(McpFundusTestCase):
         body = fundus_mcp.read_note(created["path"], project_root=str(self.project_root))
 
         self.assertEqual(scanned["documents"][0]["title"], "Existing Ticket")
-        self.assertIn("API_KEY: [REDACTED]", body)
-        self.assertNotIn("super-secret-token", body)
+        self.assertIn("API_KEY: [REDACTED]", body["content"])
+        self.assertNotIn("super-secret-token", body["content"])
 
     def test_archive_wrappers_move_restore_and_report_status(self) -> None:
         created = fundus_mcp.create_note(
@@ -216,12 +217,17 @@ class McpWrapperTest(McpFundusTestCase):
         backup = fundus_mcp.backup_create("mcp", project_root=str(self.project_root))
         backups = fundus_mcp.backup_list(project_root=str(self.project_root))
         inspected = fundus_mcp.backup_inspect(backup["id"], project_root=str(self.project_root))
+        verified = fundus_mcp.backup_verify(backup["id"], project_root=str(self.project_root))
+        restore_plan = fundus_mcp.backup_restore(backup["id"], project_root=str(self.project_root))
         area_doctor = fundus_mcp.doctor(area="Epics/AI Agent Templates", project_root=str(self.project_root))
 
         self.assertEqual(backups["backups"][0]["id"], backup["id"])
         self.assertEqual(inspected["id"], backup["id"])
+        self.assertTrue(verified["verified"])
+        self.assertFalse(restore_plan["apply"])
         self.assertEqual(area_doctor["scope"], "area")
         self.assertEqual(area_doctor["scope_path"], "Epics/AI Agent Templates")
+        self.assertFalse(area_doctor["mutation_lock"]["locked"])
 
     def test_area_init_wrapper_creates_skeleton(self) -> None:
         result = fundus_mcp.area_init(
@@ -339,6 +345,7 @@ class McpProtocolTest(McpFundusTestCase):
         )
         self.assertEqual(tools["create_note"]["inputSchema"]["properties"]["aliases"]["type"], "array")
         self.assertEqual(tools["update_note"]["inputSchema"]["properties"]["mode"]["enum"], ["append", "replace", "rewrite"])
+        self.assertEqual(tools["update_note"]["inputSchema"]["properties"]["expected_revision"]["type"], "string")
 
     def test_tool_call_returns_text_content_payload(self) -> None:
         server = fundus_mcp.build_server()

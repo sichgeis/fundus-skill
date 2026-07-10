@@ -297,8 +297,25 @@ def doctor(project: str | None = None, project_root: str | None = None, area: st
     return fundus_core.doctor_report_for_scope(context.config, context.project_root, context.project_name, context.scope)
 
 
-MCP_PROTOCOL_VERSION = "2025-06-18"
+SUPPORTED_MCP_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18")
+MCP_PROTOCOL_VERSION = SUPPORTED_MCP_PROTOCOL_VERSIONS[0]
+DEFAULT_SERVER_VERSION = "0.1.0"
+SERVER_NOT_INITIALIZED = -32002
 NONE_TYPE = type(None)
+
+
+def discover_server_version() -> str:
+    for root in SCRIPT_DIR.parents:
+        manifest_path = root / ".codex-plugin" / "plugin.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            version = json.loads(manifest_path.read_text()).get("version")
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(version, str) and version:
+            return version
+    return DEFAULT_SERVER_VERSION
 
 
 @dataclass(frozen=True)
@@ -487,10 +504,57 @@ def tool_result_text(result: Any) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2, default=str)
 
 
+def tool_error(message: str) -> dict[str, Any]:
+    return {
+        "content": [{"type": "text", "text": message}],
+        "isError": True,
+    }
+
+
+def json_type_matches(value: Any, expected_type: str) -> bool:
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    return True
+
+
+def validate_tool_arguments(tool: McpTool, arguments: dict[str, Any]) -> str | None:
+    schema = tool.input_schema
+    properties = schema.get("properties") or {}
+    required = schema.get("required") or []
+    missing = [name for name in required if name not in arguments]
+    if missing:
+        return f"Missing required argument(s): {', '.join(missing)}"
+    if schema.get("additionalProperties") is False:
+        unexpected = sorted(set(arguments) - set(properties))
+        if unexpected:
+            return f"Unexpected argument(s): {', '.join(unexpected)}"
+    for name, value in arguments.items():
+        property_schema = properties.get(name) or {}
+        expected_type = property_schema.get("type")
+        if expected_type and not json_type_matches(value, expected_type):
+            return f"Argument '{name}' must be of type {expected_type}."
+        allowed_values = property_schema.get("enum")
+        if allowed_values is not None and value not in allowed_values:
+            return f"Argument '{name}' must be one of: {', '.join(map(str, allowed_values))}."
+    return None
+
+
 class JsonRpcMcpServer:
     def __init__(self, name: str, tools: list[McpTool]) -> None:
         self.name = name
         self.tools = {tool.name: tool for tool in tools}
+        self.initialization_state = "new"
+        self.negotiated_protocol_version: str | None = None
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [
@@ -506,32 +570,67 @@ class JsonRpcMcpServer:
         tool = self.tools.get(name)
         if tool is None:
             raise fundus_core.FundusError(f"Unknown Fundus tool: {name}")
+        validation_error = validate_tool_arguments(tool, arguments or {})
+        if validation_error:
+            return tool_error(validation_error)
         try:
             result = tool.handler(**(arguments or {}))
             return {"content": [{"type": "text", "text": tool_result_text(result)}]}
         except Exception as exc:  # MCP tool errors should be surfaced as tool output, not crash the server.
-            return {
-                "content": [{"type": "text", "text": str(exc)}],
-                "isError": True,
-            }
+            return tool_error(str(exc))
 
-    def handle_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
-        method = message.get("method")
-        request_id = message.get("id")
+    def handle_message(self, message: Any) -> dict[str, Any] | None:
+        if not isinstance(message, dict):
+            return json_rpc_error(None, -32600, "Invalid Request: expected a JSON object.")
+
+        request_id = message.get("id") if "id" in message else None
         is_notification = "id" not in message
+        if message.get("jsonrpc") != "2.0":
+            return None if is_notification else json_rpc_error(request_id, -32600, "Invalid Request: jsonrpc must be '2.0'.")
+        if "id" in message and (request_id is None or isinstance(request_id, bool) or not isinstance(request_id, (str, int))):
+            return json_rpc_error(None, -32600, "Invalid Request: id must be a string or integer.")
+
+        method = message.get("method")
+        if not isinstance(method, str):
+            return None if is_notification else json_rpc_error(request_id, -32600, "Invalid Request: method must be a string.")
+        if "params" in message and not isinstance(message["params"], dict):
+            return None if is_notification else json_rpc_error(request_id, -32602, "Invalid params: expected an object.")
         params = message.get("params") or {}
 
-        if method in {"notifications/initialized", "notifications/cancelled"}:
+        if method == "notifications/initialized":
+            if not is_notification:
+                return json_rpc_error(request_id, -32600, "notifications/initialized must be a notification.")
+            if self.initialization_state == "awaiting_initialized":
+                self.initialization_state = "ready"
             return None
 
         if method == "initialize":
-            protocol_version = params.get("protocolVersion") or MCP_PROTOCOL_VERSION
+            if is_notification:
+                return None
+            if self.initialization_state != "new":
+                return json_rpc_error(request_id, -32600, "Invalid Request: server is already initialized.")
+            requested_version = params.get("protocolVersion")
+            client_capabilities = params.get("capabilities")
+            client_info = params.get("clientInfo")
+            if not isinstance(requested_version, str) or not requested_version:
+                return json_rpc_error(request_id, -32602, "initialize requires a protocolVersion string.")
+            if not isinstance(client_capabilities, dict):
+                return json_rpc_error(request_id, -32602, "initialize requires a capabilities object.")
+            if not isinstance(client_info, dict):
+                return json_rpc_error(request_id, -32602, "initialize requires a clientInfo object.")
+            protocol_version = (
+                requested_version
+                if requested_version in SUPPORTED_MCP_PROTOCOL_VERSIONS
+                else MCP_PROTOCOL_VERSION
+            )
+            self.negotiated_protocol_version = protocol_version
+            self.initialization_state = "awaiting_initialized"
             return json_rpc_result(
                 request_id,
                 {
                     "protocolVersion": protocol_version,
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": self.name, "version": "0.1.0"},
+                    "serverInfo": {"name": self.name, "version": discover_server_version()},
                     "instructions": (
                         "Use Fundus as brief, cited evidence for durable work knowledge; source code remains authoritative. "
                         "Write Fundus notes only through these tools or the Fundus CLI helper, never through raw Markdown or generic Obsidian edits."
@@ -539,21 +638,32 @@ class JsonRpcMcpServer:
                 },
             )
         if method == "ping":
-            return json_rpc_result(request_id, {})
+            return None if is_notification else json_rpc_result(request_id, {})
+        if method == "notifications/cancelled":
+            return None
+        if self.initialization_state != "ready":
+            if is_notification:
+                return None
+            detail = (
+                "Server not initialized."
+                if self.initialization_state == "new"
+                else "Server is waiting for notifications/initialized."
+            )
+            return json_rpc_error(request_id, SERVER_NOT_INITIALIZED, detail)
         if method == "tools/list":
-            return json_rpc_result(request_id, {"tools": self.list_tools()})
+            return None if is_notification else json_rpc_result(request_id, {"tools": self.list_tools()})
         if method == "tools/call":
+            if is_notification:
+                return None
             name = params.get("name")
-            arguments = params.get("arguments") or {}
+            arguments = params.get("arguments", {})
             if not isinstance(name, str):
                 return json_rpc_error(request_id, -32602, "tools/call requires a string tool name.")
             if not isinstance(arguments, dict):
                 return json_rpc_error(request_id, -32602, "tools/call arguments must be an object.")
+            if name not in self.tools:
+                return json_rpc_error(request_id, -32602, f"Unknown tool: {name}")
             return json_rpc_result(request_id, self.call_tool(name, arguments))
-        if method == "resources/list":
-            return json_rpc_result(request_id, {"resources": []})
-        if method == "prompts/list":
-            return json_rpc_result(request_id, {"prompts": []})
         if is_notification:
             return None
         return json_rpc_error(request_id, -32601, f"Unsupported method: {method}")
@@ -567,55 +677,27 @@ class JsonRpcMcpServer:
                 continue
             if message is None:
                 return
-            response = self.handle_message(message)
+            try:
+                response = self.handle_message(message)
+            except Exception:
+                request_id = message.get("id") if isinstance(message, dict) else None
+                response = json_rpc_error(request_id, -32603, "Internal error")
             if response is not None:
                 write_stdio_message(sys.stdout.buffer, response)
 
 
-def parse_header_line(line: bytes) -> tuple[str, str]:
-    name, value = line.decode("ascii", errors="replace").split(":", 1)
-    return name.strip().lower(), value.strip()
-
-
 def read_stdio_message(stream: Any) -> dict[str, Any] | None:
-    while True:
-        first_line = stream.readline()
-        if not first_line:
-            return None
-        if first_line.strip():
-            break
-
-    stripped = first_line.lstrip()
-    if stripped.startswith(b"{"):
-        return json.loads(first_line.decode("utf-8"))
-
-    headers: dict[str, str] = {}
-    if b":" not in first_line:
-        raise ValueError("Expected JSON-RPC message or Content-Length header.")
-    name, value = parse_header_line(first_line)
-    headers[name] = value
     while True:
         line = stream.readline()
         if not line:
-            raise ValueError("Unexpected EOF while reading message headers.")
-        if line in (b"\r\n", b"\n"):
+            return None
+        if line.strip():
             break
-        name, value = parse_header_line(line)
-        headers[name] = value
-
-    length_text = headers.get("content-length")
-    if length_text is None:
-        raise ValueError("Missing Content-Length header.")
-    length = int(length_text)
-    body = stream.read(length)
-    if len(body) != length:
-        raise ValueError("Unexpected EOF while reading message body.")
-    return json.loads(body.decode("utf-8"))
+    return json.loads(line.decode("utf-8"))
 
 
 def write_stdio_message(stream: Any, message: dict[str, Any]) -> None:
-    payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    stream.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii"))
+    payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
     stream.write(payload)
     stream.flush()
 

@@ -1,268 +1,640 @@
 # Fundus Target Picture
 
-Status: stable decision reference after DDD interview
-Date: 2026-07-09
+Status: stable target for the remediation and second release
+Date: 2026-07-10
+Supersedes: target picture dated 2026-07-09 where statements conflict
 
-Use this document as the durable product and domain picture for implementation. It should change only when the desired behavior, OKF profile, corpus strategy, or plugin architecture changes. Use `docs/agent-implementation-tracker.md` for pass-by-pass execution status.
+## Document role
 
-## Target Picture
+This document defines the desired product behavior, domain model, corpus contract, and target architecture for Fundus.
 
-Fundus should become Christian's personal Codex workbench for durable work knowledge. It should feel native in Codex, but it should remain explicit: the user invokes it to search, save, retrieve, update, or curate knowledge. During ticket and research work, Codex may also perform a read-only Fundus lookup when prior context is likely useful.
+Use:
 
-Fundus is evidence, not authority. Source code is the primary source of truth for implemented behavior. Jira, GitHub, source code, interviews, and user-provided context can all update Fundus, but Fundus should never silently override fresher primary evidence.
+- `docs/agent-implementation-tracker.md` for ordered execution and phase status.
+- `docs/implementation.md` for current implementation facts and target technical contracts.
+- `docs/architecture-invariants.md` for normative safety and consistency rules.
+- `docs/testing-and-validation.md` for verification strategy.
+- `docs/decision-record.md` for defaults selected during the review.
 
-The first satisfying release should include:
+Change this file only when a durable product or architecture decision changes.
 
-- A canonical `Fundus/` corpus migrated from the existing `Wiki/` corpus.
-- Strict enough OKF compatibility for active concept notes.
-- Strict OKF reserved-file cleanup for `index.md` and `log.md`.
-- Quiet preservation of archived notes under `Fundus/_archive/`.
-- A compact, MCP-first Codex skill packaged as a local plugin.
-- Snappy core workbench flows for search, save, update, and stale-note proposals.
+## Executive target
 
-Team sharing and complex graph visualization are explicitly out of scope for the first release.
+Fundus is Christian's personal-first, portable Codex workbench for durable work knowledge.
 
-## Current Corpus Findings
+It persists project, ticket, domain, epic, decision, interview, architecture, runbook, and cross-repository knowledge as Markdown in an Obsidian vault. It should feel native inside Codex while preserving these boundaries:
 
-The live personal work knowledge base currently lives at:
+1. Fundus is evidence, not authority.
+2. Source code and current primary evidence win.
+3. Human direct edits in Obsidian remain supported.
+4. Agent writes go only through Fundus operations.
+5. Read-only context retrieval may happen opportunistically.
+6. Mutations are explicit, conflict-aware, and recoverable.
+7. The corpus remains understandable without Codex or the plugin.
+8. Administrative operations do not dominate the normal workbench surface.
 
-```text
-/Users/christian/vault/Hypatos/Wiki
-```
+## Current corpus state
 
-The current Fundus config points to:
+The canonical local corpus is:
 
 ```text
 /Users/christian/vault/Hypatos/Fundus
 ```
 
-That `Fundus/` directory does not exist yet. The migration from `Wiki/` to `Fundus/` is therefore not optional; it is part of the setup path before the plugin can feel coherent.
+The legacy `Wiki/` corpus was migrated on 2026-07-09, verified, backed up, and retired. `Fundus/` is the single live work-knowledge root.
 
-Read-only inspection on 2026-07-09 found:
+The personal path above describes the current owner's environment. It MUST NOT be embedded as a default in a distributable plugin package.
 
-- 217 Markdown files under `Wiki/`.
-- 158 active notes and 59 archived notes.
-- No files missing frontmatter entirely.
-- All active notes have `type`, `title`, `tags`, `scope`, `scope_path`, and timestamps.
-- 49 archived legacy notes are missing `type`.
-- Active project, domain, epic, decision, and operations areas already use useful folder structure.
-- Existing `index.md` and `log.md` files have frontmatter today, but strict OKF treats them as reserved files rather than ordinary concept documents.
-- No notes currently use `aliases`, `resource`, or `last_verified`.
-- A few notes use "Sources used"; none use OKF's conventional `# Citations` heading.
+## Product audience and distribution
 
-Conclusion: the corpus is already agent-traversable, but it needs a canonical `Fundus/` location, an index, strict reserved-file cleanup, and a few metadata improvements for future retrieval.
+The near-term product optimizes for one user and one local corpus. It is nevertheless designed so another user can install it by configuring a vault path.
 
-## Product Decisions
+In scope:
 
-### Workbench Role
+- personal local use,
+- multiple repositories,
+- cross-repository areas,
+- ordinary direct Obsidian editing by the human,
+- one or more local Codex processes,
+- hundreds to low thousands of notes,
+- recovery from backups and archives.
 
-Fundus is primarily an explicit workbench tool.
+Out of scope for the next release:
 
-Core first-release intents:
+- real-time team collaboration,
+- remote hosted synchronization,
+- access-control systems,
+- complex graph visualization,
+- semantic vector infrastructure,
+- a web user interface,
+- autonomous bulk rewriting of the corpus.
 
-- "Search Fundus for X."
-- "Save this into Fundus."
-- "Update the relevant Fundus note with what we learned."
-- "This Fundus note seems stale; propose a correction."
+## Source hierarchy
 
-Natural save intent should also work. Phrases such as "remember this", "document this", "save this", or "put this into Fundus" may create or update Fundus notes when the current context is clearly durable work knowledge.
-
-If the save intent is casual, personal, or not clearly work-related, Codex should ask instead of writing to Fundus.
-
-### Evidence Behavior
-
-When Fundus is used in research:
-
-- Treat Fundus as evidence when the note is current and directly relevant.
-- Mention Fundus briefly when it materially influenced the answer.
-- Prefer a short citation, for example: "Fundus has related context in `Prompt Authoring`; it frames this as an authoring-surface boundary."
-- Do not include a large evidence block unless asked.
-- If Fundus was checked opportunistically and nothing useful was found, silence is fine.
-- If the user explicitly asks to search Fundus, report the result even when no relevant note exists.
-
-### Source Hierarchy
-
-Use this source hierarchy when Fundus and current work disagree:
+When evidence conflicts, use this order:
 
 1. Source code for implemented behavior.
 2. Current primary work sources such as Jira, GitHub, Confluence, Slack, interviews, or the user's direct statement.
-3. Fundus as contextual evidence and discussion history.
+3. Fundus as durable context, discussion history, and prior decisions.
+4. Archived Fundus content as explicitly historical evidence.
 
-If Fundus appears stale or contradicted by code, Codex should propose a concise natural-language update. It should not patch Fundus by default during ordinary research.
+Fundus must not silently override fresher evidence. A stale note should produce a concise correction proposal or a verification-state update.
 
-Codex may update Fundus automatically when the user explicitly grants broad update intent, for example: "we learned X, update everything relevant", "update Jira and Fundus", or "document this in Fundus". In that case, Codex should summarize the Fundus changes afterward.
+## Core interaction model
 
-### Scope Inference
+### Read-only implicit context
 
-Low friction matters. When scope is not explicit, Codex should infer the likely Fundus placement from the whole conversation, then report where it saved.
+Codex may invoke Fundus implicitly during ticket, research, architecture, or implementation work when prior context is likely to help.
 
-Signals:
+Implicit use is read-only from the user's perspective:
 
-- Conversation intent is the strongest signal.
-- Current repository is a strong signal for implementation-local knowledge.
-- Ticket IDs, epic names, domain terms, and area names are supporting signals.
-- Discovery, interview, strategy, domain, or cross-repository work should usually go to an area.
-- Code behavior, repo architecture, tests, and implementation details should usually go to the current project.
+```text
+search
+read best match
+read a bounded number of additional candidates when necessary
+```
 
-The user can correct placement later through a move workflow.
+If an opportunistic lookup finds nothing useful, Codex may remain silent. If the user explicitly requested a Fundus search, it reports the result even when empty.
 
-### Retrieval Behavior
+### Explicit search
 
-Start with tiered retrieval:
+Representative intent:
 
-- Use the best active Fundus match when confidence is good.
-- If confidence is uncertain and the task matters, inspect a bounded number of additional plausible matches automatically.
-- Do not interrupt the user to ask whether to search wider.
-- Keep the final answer compact.
-- Mention additional candidates only briefly when relevant.
+```text
+Search Fundus for BACKEND-2291.
+Find prior decisions about prompt authoring.
+Show archived context for the old extraction design.
+```
 
-Archived notes are preserved but quiet:
+The result is compact and includes enough metadata to decide what to read:
 
-- Migrate archives to `Fundus/_archive/`.
-- Exclude archives from normal search.
-- Include archived notes only when the user explicitly asks for archived, stale, historical, or recovery context.
-- Archived notes should not be treated as normal evidence.
+```json
+{
+  "path": "Fundus/demo/prompt-boundary.md",
+  "title": "Prompt Boundary",
+  "scope": "project",
+  "scope_path": "demo",
+  "score": 98,
+  "confidence": "high",
+  "reason": ["ticket", "alias"],
+  "updated": "2026-07-09T12:00:00+02:00",
+  "last_verified": "2026-07-09",
+  "revision": "sha256:..."
+}
+```
 
-### Write Completion
+### Save
 
-The human-facing confirmation after a write should be short, often just the title or path.
+Representative intent:
 
-The note itself must be good enough for agents:
+```text
+Save this finding in Fundus.
+Document this decision.
+Remember this durable implementation constraint.
+```
 
-- OKF-compatible frontmatter on active concept notes.
-- Strong title and useful description.
-- Scope and tags that make later lookup easy.
-- Ordinary Markdown links for relationships.
-- Citations or source sections when the note body relies on important source material.
+The backend performs duplicate detection before creating a note. If a likely match exists, it returns update candidates rather than creating a duplicate automatically.
 
-## OKF And Local Profile
+### Update
 
-The public OKF v0.1 shape is intentionally small: Markdown files, YAML frontmatter, a required non-empty `type` field for concept documents, optional recommended metadata, ordinary Markdown links, optional `index.md`, and optional `log.md`.
+The normal safe sequence is:
 
-Fundus should be OKF-compatible, but stricter for active concept notes because agents traverse the corpus.
+```text
+search
+read with revision
+build proposal
+show or internally validate diff
+apply with expected revision
+refresh derived index
+confirm briefly
+```
 
-Required for new active non-reserved notes:
+Explicit broad write intent may allow proposal and apply within the same user turn, but the backend still enforces revision safety.
+
+### Stale-note correction
+
+A stale-note proposal includes:
+
+```text
+target path
+base revision
+reason for staleness
+primary evidence
+proposed mode
+proposed content or diff
+metadata changes
+```
+
+Ordinary research does not silently rewrite stale Fundus content.
+
+### Move, archive, and restore
+
+Move changes location without changing stable note identity.
+
+Archive:
+
+- is explicit,
+- preserves the note,
+- mirrors the active path under `_archive`,
+- records original path and reason,
+- removes the note from normal evidence retrieval.
+
+Restore validates the archived original path and fails safely if the destination conflicts.
+
+## Scope model
+
+### Project scope
+
+Project scope is the default for implementation-local knowledge:
+
+```text
+Fundus/{project}/...
+```
+
+Examples:
+
+- code behavior,
+- repository architecture,
+- tests,
+- deployment notes,
+- project-specific runbooks,
+- ticket research tied to one implementation.
+
+A project name is one safe path segment.
+
+### Area scope
+
+Area scope is explicit for cross-repository or domain knowledge:
+
+```text
+Fundus/Epics/{name}/...
+Fundus/Domains/{name}/...
+Fundus/Decisions/{name}/...
+Fundus/Interviews/{name}/...
+Fundus/References/{name}/...
+Fundus/Operations/{name}/...
+```
+
+Examples:
+
+- domain models,
+- cross-repository capabilities,
+- discovery and interviews,
+- story maps,
+- strategic decisions,
+- epics spanning several services.
+
+### Logical scope versus physical folder
+
+`scope_path` identifies the logical scope root:
+
+```yaml
+scope: area
+scope_path: Epics/AI Agent Templates
+```
+
+A note may physically live in:
+
+```text
+Fundus/Epics/AI Agent Templates/references/source-notes.md
+```
+
+The physical folder remains available through `path`; it does not change the logical scope.
+
+### Canonical classifier
+
+One scope classifier is shared by:
+
+```text
+create
+move
+normalize
+migrate
+index
+archive
+restore
+doctor
+```
+
+No operation infers scope independently from string-prefix heuristics.
+
+## Corpus and document model
+
+### Canonical storage
+
+Markdown is canonical. Generated indexes and reports are caches or diagnostics.
+
+Target layout:
+
+```text
+Fundus/
+├── project-name/
+│   ├── index.md
+│   ├── overview.md
+│   ├── research/
+│   └── decisions/
+├── Epics/
+│   └── AI Agent Templates/
+│       ├── index.md
+│       ├── log.md
+│       ├── overview.md
+│       ├── decisions/
+│       ├── open-questions/
+│       ├── stories/
+│       ├── interviews/
+│       ├── domain-model/
+│       ├── implementation-map/
+│       └── references/
+├── Domains/
+├── Decisions/
+├── Operations/
+└── _archive/
+```
+
+### Concept notes
+
+A new active non-reserved note uses the local OKF-compatible profile:
 
 ```yaml
 ---
 type: Research
-title: Example Title
-description: Short useful retrieval summary.
-id: project/example-repo/example-title
+title: Prompt Authoring Boundary
+description: Current boundary between prompt authoring and prompt execution.
+id: project/prompting-service/prompt-authoring-boundary
 scope: project
-scope_path: example-repo
-created: 2026-07-09T00:00:00+02:00
-updated: 2026-07-09T00:00:00+02:00
-timestamp: 2026-07-09T00:00:00+02:00
-project: example-repo
+scope_path: prompting-service
+created: 2026-07-10T10:00:00+02:00
+updated: 2026-07-10T10:00:00+02:00
+timestamp: 2026-07-10T10:00:00+02:00
+project: prompting-service
 tags:
   - fundus
-  - project/example-repo
----
-```
-
-Area notes omit `project` and use area scope:
-
-```yaml
----
-type: Domain
-title: Prompt Authoring
-description: Stable domain context for prompt authoring concepts and boundaries.
-id: area/domains/prompt-authoring/overview
-scope: area
-scope_path: Domains/Prompt Authoring
-created: 2026-07-09T00:00:00+02:00
-updated: 2026-07-09T00:00:00+02:00
-timestamp: 2026-07-09T00:00:00+02:00
-tags:
-  - fundus
-  - area/domains/prompt-authoring
-  - prompt-authoring
----
-```
-
-Recommended optional fields:
-
-```yaml
+  - project/prompting-service
 aliases:
   - BACKEND-2291
 resource: https://jira.example/browse/BACKEND-2291
 status: active
-owner: Christian
-last_verified: 2026-07-09
-projects:
-  - prompting-service
-repos:
-  - prompting-service
+last_verified: 2026-07-10
+---
 ```
 
-Rules:
+Recommended provenance fields may include:
 
-- Preserve unknown frontmatter keys.
-- Do not force strict normalization on archived legacy notes unless it is cheap and automatic.
-- Active `index.md` and `log.md` are reserved files and should not have frontmatter after cleanup.
-- Concept metadata belongs in regular notes such as `overview.md`, not in reserved files.
-- Use normal Markdown links for graph relationships.
-- Prefer `# Citations` when a note needs source provenance.
+```yaml
+verified_against:
+  - github:org/repo@commit
+  - jira:BACKEND-2291
+source_fingerprint: github:org/repo:path@sha256
+verification_status: current
+```
 
-## Target Architecture
+Unknown supported frontmatter fields must survive round trips.
+
+### Reserved files
+
+Active `index.md` and `log.md` are reserved files:
+
+- no concept frontmatter,
+- navigation or chronological content only,
+- not ranked as ordinary evidence,
+- may be indexed as explicitly reserved records.
+
+`overview.md` holds the scope's concept metadata.
+
+### Redirects
+
+When a move leaves a stub, the stub is a first-class redirect:
+
+```yaml
+type: Redirect
+redirect_to: Fundus/Epics/AI Agent Templates/prompt-boundary.md
+```
+
+Redirects are excluded from normal evidence search and resolved on read.
+
+### Stable revision
+
+Every read operation returns a revision derived from the canonical bytes, normally SHA-256.
+
+Mutations that can overwrite content accept `expected_revision`. A mismatch returns a conflict and writes nothing.
+
+## Search and index target
+
+The index remains a lightweight JSON cache at:
 
 ```text
-Fundus corpus
-├── project-name/
-│   ├── index.md              # reserved, no frontmatter
-│   ├── overview.md           # concept note with frontmatter
-│   └── research-note.md      # concept note with frontmatter
-├── Domains/
-│   └── Prompt Authoring/
-│       ├── index.md          # reserved, no frontmatter
-│       ├── log.md            # reserved, no frontmatter
-│       ├── overview.md       # concept note with frontmatter
-│       └── domain-model/
-└── _archive/
-    └── ...
+{vault_path}/{fundus_dir}/.fundus-index.json
 ```
 
-Plugin package:
+Each record stores bounded retrieval data:
 
 ```text
-fundus plugin
-├── .codex-plugin/plugin.json
-├── .mcp.json
-├── skills/fundus/SKILL.md
-├── skills/fundus/agents/openai.yaml
-├── skills/fundus/scripts/fundus.py
-├── skills/fundus/scripts/fundus_mcp.py
-├── skills/fundus/requirements.txt  # no-dependency marker
-└── skills/fundus/docs/reference/*.md
+path
+stable id
+scope
+scope path
+title
+description
+aliases
+resource
+status
+owner
+last verified
+tags
+headings
+bounded excerpt
+ticket ids
+normalized tokens
+archive state
+content revision
+mtime
 ```
 
-Runtime flow:
+Requirements:
+
+1. Search semantics are the same with and without an index.
+2. A search detects changed, new, and removed files in its relevant scope.
+3. Stale entries are refreshed or bypassed before results are returned.
+4. Archived notes remain excluded unless requested.
+5. Corrupt indexes fall back safely and produce a diagnostic.
+6. Full rebuild remains deterministic.
+7. Search output stays compact by default.
+8. Benchmarks are recorded for 2,000 representative notes.
+
+The initial performance target is a warm local p95 search at or below 100 ms for 2,000 notes on the primary development machine. If the baseline cannot meet that target, record the measurements and optimize before changing storage technology.
+
+## Write safety and concurrency
+
+### Atomicity
+
+Single-file replacements use a temporary file in the destination directory, flush data as appropriate, and atomically replace the destination.
+
+### Optimistic concurrency
+
+Read returns a revision. Apply requires the expected revision for overwrite-like operations.
+
+### Locking
+
+A corpus lock serializes note-plus-index mutations. The lock implementation:
+
+- has bounded acquisition time,
+- reports lock ownership diagnostics,
+- recovers from stale locks safely,
+- is testable in temporary vaults,
+- does not leave persistent state after read-only calls.
+
+### Multi-step operations
+
+Move, archive, restore, backup restore, and migration promotion use atomic rename where possible and a journal or rollback plan where not.
+
+A failed operation must not silently leave:
+
+- duplicate active and archived copies,
+- a removed source without a valid destination,
+- an index that claims a different corpus state,
+- an unrecoverable partially promoted migration.
+
+## Target implementation architecture
 
 ```text
-user asks to save or consult durable knowledge
-  -> Codex selects Fundus skill
-  -> Fundus skill prefers MCP
-  -> MCP scans indexed active Fundus metadata
-  -> Codex reads only likely matches
-  -> MCP create/update writes through Fundus domain functions
-  -> affected index entry refreshes
-  -> Codex confirms briefly
+User or Codex
+    |
+    +-- Skill policy
+    |     +-- implicit read-only context
+    |     +-- explicit curation
+    |
+    +-- MCP transport --------+
+    |                         |
+    +-- CLI transport --------+--> Application operations
+                                      |
+                                      +-- scope and path values
+                                      +-- note repository
+                                      +-- frontmatter codec
+                                      +-- revision and locking
+                                      +-- search/index
+                                      +-- backup/archive
+                                      +-- proposals/provenance
 ```
 
-Fallback flow:
+Target source layout:
 
 ```text
-MCP unavailable
-  -> skill uses installed helper directly
-  -> read-only commands run normally
-  -> write-like commands use explicit sandbox escalation when vault is outside workspace
-  -> if the helper is unavailable too, Codex reports Fundus writes as blocked instead of editing Markdown directly
+fundus/
+├── config.py
+├── models.py
+├── paths.py
+├── frontmatter.py
+├── repository.py
+├── search.py
+├── revisions.py
+├── locking.py
+├── operations.py
+├── errors.py
+├── cli.py
+├── mcp_server.py
+└── admin/
+    ├── backup.py
+    ├── migration.py
+    ├── normalization.py
+    └── verification.py
 ```
 
-## Source References
+The exact module names may change, but the boundaries are required.
 
-- Google Cloud OKF announcement: https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing
-- OKF specification: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
-- OKF repository: https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
-- Data Commons data model, used only as contrast for heavier graph modeling: https://docs.datacommons.org/data_model.html
+## MCP target
+
+### Transport
+
+The stdio server uses one UTF-8 JSON-RPC message per line. It writes no non-MCP text to stdout.
+
+### Lifecycle
+
+The server:
+
+- accepts `initialize` as the first interaction,
+- negotiates from an explicit supported-version list,
+- advertises only implemented capabilities,
+- waits for `notifications/initialized` before normal server-originated interaction,
+- rejects malformed requests with protocol errors,
+- returns unknown-tool errors without terminating,
+- shuts down cleanly when stdin closes.
+
+### Tool contracts
+
+Tools expose input schemas, output schemas where practical, structured content, and behavior annotations.
+
+Representative annotations:
+
+| Operation | Read only | Destructive | Idempotent | Open world |
+| --- | --- | --- | --- | --- |
+| search | yes, unless persistent repair occurs | no | yes | no |
+| read | yes | no | yes | no |
+| propose update | yes | no | yes | no |
+| apply create | no | no | no | no |
+| apply update | no | yes | conditional | no |
+| move | no | yes | no | no |
+| archive | no | yes | no | no |
+| index rebuild | no | no | yes | no |
+
+The implementation must not advertise a read-only hint for a tool that persistently repairs an index.
+
+### Tool surface
+
+Normal server:
+
+```text
+search_fundus
+read_note
+propose_create
+apply_create
+propose_update
+apply_update
+move_note
+archive_note
+restore_note
+doctor
+```
+
+Administrative operations may remain CLI-only or move to a separately enabled server:
+
+```text
+backup
+migration
+global normalization
+index repair
+cleanup
+corpus verification
+```
+
+Compatibility wrappers may remain temporarily but should be deprecated explicitly.
+
+## Configuration target
+
+Precedence:
+
+1. explicit CLI/MCP argument where supported,
+2. `OBSIDIAN_VAULT_PATH` for compatibility,
+3. `FUNDUS_CONFIG_PATH`,
+4. project `.codex/fundus.json`,
+5. user configuration such as `~/.config/fundus/config.json`,
+6. non-personal built-in defaults.
+
+The package contains an example configuration, not a personal absolute path.
+
+`doctor` reports:
+
+```text
+resolved project root
+project name
+scope
+vault path
+Fundus root
+configuration source for each value
+Python executable
+plugin root
+index state
+lock state
+corpus verification summary
+```
+
+## Plugin packaging target
+
+The plugin root contains:
+
+```text
+.codex-plugin/plugin.json
+.mcp.json
+skills/fundus/
+```
+
+The companion `.mcp.json` uses a Codex-supported direct server map or `mcp_servers` wrapper.
+
+The exact packaged command is exercised by integration tests.
+
+Plugin manifest, MCP server info, marketplace metadata, and release notes share one version source.
+
+The repository contains the license declared by the manifest.
+
+## Skill behavior target
+
+The skill remains compact. It communicates:
+
+- when Fundus should and should not be used,
+- evidence hierarchy,
+- implicit read-only behavior,
+- scope inference,
+- scan before create,
+- propose/apply behavior,
+- no raw Markdown fallback,
+- archive quietness,
+- blocked-write reporting.
+
+Exact commands and admin workflows stay in reference documents.
+
+## Release criteria
+
+The next release is ready only when:
+
+1. Packaged MCP integration completes initialize, tools/list, and a real tool call through a conforming client.
+2. Path traversal and scope-boundary tests pass.
+3. `area init` produces a corpus that immediately passes verification.
+4. Indexed and unindexed search pass the same retrieval fixtures.
+5. External Obsidian edits are visible on the next search.
+6. Revision conflicts prevent lost updates.
+7. Concurrent mutations do not corrupt the index.
+8. Frontmatter round trips pass the supported-value corpus.
+9. Move tests cover every project/area direction.
+10. The default tool surface excludes one-time migration operations.
+11. The built artifact contains no personal vault path.
+12. CI runs focused, package, protocol, and unit tests.
+13. Documentation describes actual behavior.
+14. A clean temporary-vault end-to-end scenario passes.
+15. `task verify` passes.
+
+## External references
+
+- Codex plugin packaging: https://learn.chatgpt.com/docs/build-plugins
+- MCP transport: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+- MCP lifecycle: https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle
+- MCP tools: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+- MCP schema: https://modelcontextprotocol.io/specification/2025-11-25/schema

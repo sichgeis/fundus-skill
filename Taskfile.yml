@@ -80,6 +80,12 @@ tasks:
     cmds:
       - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" scripts/audit_token_budget.py
 
+  test:mcp-integration:
+    desc: Exercise the source and exact packaged MCP commands with an independent client
+    deps: [build:plugin]
+    cmds:
+      - FUNDUS_PLUGIN_ROOT="{{.PLUGIN_BUILD_DIR}}" PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" -m unittest tests.test_fundus_mcp_integration
+
   install:
     desc: Install the Fundus Codex plugin from the local marketplace
     cmds:
@@ -129,6 +135,7 @@ tasks:
       - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" "{{.BUILD_DIR}}/scripts/fundus_mcp.py" --check
       - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" scripts/audit_token_budget.py
       - PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" scripts/validate_plugin_package.py "{{.PLUGIN_BUILD_DIR}}"
+      - task: test:mcp-integration
       - |
         if test -f "{{.PLUGIN_VALIDATOR}}"; then
           if PYTHONDONTWRITEBYTECODE=1 "{{.PYTHON}}" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('yaml') else 1)"; then

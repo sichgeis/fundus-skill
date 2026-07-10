@@ -35,6 +35,9 @@ The canonical live corpus is `/Users/christian/vault/Hypatos/Fundus`. The old `W
 - `docs/agent-implementation-tracker.md`: active multi-pass work tracker, phase status board, implementation inventory, backlog, and pass protocol. Start here when implementing the target solution.
 - `docs/fundus-target-picture.md`: stable target picture, DDD decisions, corpus findings, OKF-compatible profile, source hierarchy, and plugin architecture.
 - `docs/implementation.md`: current helper, MCP, packaging, permissions, and runtime notes. Update this when code behavior changes.
+- `docs/architecture-invariants.md`: normative safety, consistency, protocol, and packaging rules.
+- `docs/testing-and-validation.md`: phase-specific test strategy and release evidence requirements.
+- `docs/decision-record.md`: adopted product and architecture defaults for the remediation program.
 
 ## Build
 
@@ -86,11 +89,15 @@ The plugin includes a local stdio MCP server. Codex reads `.mcp.json` from the i
 
 ```json
 {
-  "command": "python",
-  "args": ["./skills/fundus/scripts/fundus_mcp.py"],
-  "cwd": "."
+  "fundus": {
+    "command": "python",
+    "args": ["./skills/fundus/scripts/fundus_mcp.py"],
+    "cwd": "."
+  }
 }
 ```
+
+The direct server map is one of the shapes documented for bundled Codex MCP servers. The server uses newline-delimited UTF-8 JSON-RPC on stdio, negotiates `2025-11-25` or `2025-06-18`, and requires the MCP initialization lifecycle before normal tool operations. Recoverable protocol and tool errors do not terminate the process.
 
 The server is self-contained and uses only the Python standard library plus the bundled Fundus helper. Check the built server with:
 
@@ -347,7 +354,7 @@ Run:
 task verify
 ```
 
-This builds the direct skill package, plugin package, and local marketplace; checks the CLI and MCP entrypoints; validates the plugin manifest when the local validator is available; and runs the unit tests.
+This builds the direct skill package, plugin package, and local marketplace; checks the CLI and MCP entrypoints; validates the documented plugin configuration shape; launches the exact packaged MCP command through an independent client; and runs the unit tests.
 
 After installing, verify the plugin is visible to Codex with:
 

@@ -31,6 +31,21 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
+def mcp_server_map(mcp: dict[str, Any], errors: list[str]) -> dict[str, Any]:
+    if "mcpServers" in mcp:
+        errors.append("mcp config uses unsupported camel-case mcpServers wrapper")
+        return {}
+    if "mcp_servers" in mcp:
+        wrapped = mcp.get("mcp_servers")
+        if not isinstance(wrapped, dict):
+            errors.append("mcp_servers must be an object")
+            return {}
+        extra_keys = set(mcp) - {"mcp_servers"}
+        require(not extra_keys, "wrapped mcp config must contain only mcp_servers", errors)
+        return wrapped
+    return mcp
+
+
 def validate_plugin(plugin_root: Path) -> list[str]:
     errors: list[str] = []
     manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
@@ -56,11 +71,14 @@ def validate_plugin(plugin_root: Path) -> list[str]:
 
     if mcp_path.exists():
         mcp = load_json(mcp_path)
-        servers = mcp.get("mcpServers") or {}
+        servers = mcp_server_map(mcp, errors)
         require("fundus" in servers, "mcp config missing fundus server", errors)
-        server = servers.get("fundus") or {}
+        raw_server = servers.get("fundus") or {}
+        require(isinstance(raw_server, dict), "fundus MCP server config must be an object", errors)
+        server = raw_server if isinstance(raw_server, dict) else {}
         require(server.get("command") in {"python", "python3"}, "fundus MCP command should be python or python3", errors)
         require("./skills/fundus/scripts/fundus_mcp.py" in (server.get("args") or []), "fundus MCP args should launch packaged server", errors)
+        require(server.get("cwd") == ".", "fundus MCP cwd should be the plugin root", errors)
 
     require((plugin_root / "skills" / "fundus" / "SKILL.md").exists(), "missing packaged skill", errors)
     require((plugin_root / "skills" / "fundus" / "scripts" / "fundus.py").exists(), "missing packaged helper", errors)

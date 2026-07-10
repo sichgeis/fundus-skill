@@ -294,21 +294,37 @@ class McpWrapperTest(McpFundusTestCase):
 
 
 class McpProtocolTest(McpFundusTestCase):
-    def test_server_initializes_and_lists_tools_without_external_sdk(self) -> None:
-        server = fundus_mcp.build_server()
-
-        initialized = server.handle_message(
+    def initialize_server(self, server, protocol_version: str = "2025-11-25") -> dict:
+        response = server.handle_message(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {"protocolVersion": "2025-06-18"},
+                "params": {
+                    "protocolVersion": protocol_version,
+                    "capabilities": {},
+                    "clientInfo": {"name": "fundus-test", "version": "1.0.0"},
+                },
             }
         )
+        server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+            }
+        )
+        return response
+
+    def test_server_initializes_and_lists_tools_without_external_sdk(self) -> None:
+        server = fundus_mcp.build_server()
+
+        initialized = self.initialize_server(server, "2025-06-18")
         listed = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
 
+        self.assertEqual(initialized["result"]["protocolVersion"], "2025-06-18")
         self.assertEqual(initialized["result"]["serverInfo"]["name"], "fundus")
+        self.assertEqual(initialized["result"]["serverInfo"]["version"], "0.1.0")
         self.assertIn("tools", initialized["result"]["capabilities"])
         self.assertIn("never through raw Markdown", initialized["result"]["instructions"])
         self.assertIn("migrate_wiki_to_fundus", tools)
@@ -317,6 +333,7 @@ class McpProtocolTest(McpFundusTestCase):
 
     def test_tool_call_returns_text_content_payload(self) -> None:
         server = fundus_mcp.build_server()
+        self.initialize_server(server)
 
         response = server.handle_message(
             {
@@ -339,14 +356,178 @@ class McpProtocolTest(McpFundusTestCase):
         self.assertEqual(payload["path"], "Fundus/demo/workbench-note.md")
         self.assertTrue((self.vault_path / "Fundus" / "demo" / "workbench-note.md").exists())
 
-    def test_stdio_message_framing_round_trips(self) -> None:
-        message = {"jsonrpc": "2.0", "id": 4, "method": "ping"}
+    def test_unsupported_protocol_version_negotiates_latest_supported_version(self) -> None:
+        server = fundus_mcp.build_server()
+
+        response = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2099-01-01",
+                    "capabilities": {},
+                    "clientInfo": {"name": "future-client", "version": "1.0.0"},
+                },
+            }
+        )
+
+        self.assertEqual(response["result"]["protocolVersion"], "2025-11-25")
+        self.assertEqual(server.negotiated_protocol_version, "2025-11-25")
+        self.assertEqual(
+            fundus_mcp.SUPPORTED_MCP_PROTOCOL_VERSIONS,
+            ("2025-11-25", "2025-06-18"),
+        )
+
+    def test_lifecycle_blocks_operations_until_initialized_notification(self) -> None:
+        server = fundus_mcp.build_server()
+
+        before_initialize = server.handle_message(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )
+        ping = server.handle_message({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+        initialized = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1.0.0"},
+                },
+            }
+        )
+        before_notification = server.handle_message(
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}
+        )
+        repeated_initialize = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1.0.0"},
+                },
+            }
+        )
+
+        self.assertEqual(before_initialize["error"]["code"], fundus_mcp.SERVER_NOT_INITIALIZED)
+        self.assertEqual(ping["result"], {})
+        self.assertEqual(initialized["result"]["protocolVersion"], "2025-11-25")
+        self.assertEqual(before_notification["error"]["code"], fundus_mcp.SERVER_NOT_INITIALIZED)
+        self.assertEqual(repeated_initialize["error"]["code"], -32600)
+
+        server.handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        listed = server.handle_message({"jsonrpc": "2.0", "id": 6, "method": "tools/list"})
+        self.assertIn("tools", listed["result"])
+
+    def test_unknown_tool_is_protocol_error_and_server_remains_alive(self) -> None:
+        server = fundus_mcp.build_server()
+        self.initialize_server(server)
+
+        unknown = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "does_not_exist", "arguments": {}},
+            }
+        )
+        ping = server.handle_message({"jsonrpc": "2.0", "id": 3, "method": "ping"})
+
+        self.assertEqual(unknown["error"]["code"], -32602)
+        self.assertEqual(unknown["error"]["message"], "Unknown tool: does_not_exist")
+        self.assertEqual(ping["result"], {})
+
+    def test_malformed_requests_return_protocol_errors(self) -> None:
+        server = fundus_mcp.build_server()
+
+        not_an_object = server.handle_message([])
+        wrong_jsonrpc = server.handle_message(
+            {"jsonrpc": "1.0", "id": 1, "method": "ping"}
+        )
+        invalid_params = server.handle_message(
+            {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": []}
+        )
+        missing_client_info = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {}},
+            }
+        )
+
+        self.assertEqual(not_an_object["error"]["code"], -32600)
+        self.assertEqual(wrong_jsonrpc["error"]["code"], -32600)
+        self.assertEqual(invalid_params["error"]["code"], -32602)
+        self.assertEqual(missing_client_info["error"]["code"], -32602)
+
+    def test_tool_argument_validation_and_business_errors_are_tool_errors(self) -> None:
+        server = fundus_mcp.build_server()
+        self.initialize_server(server)
+
+        missing_required = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "create_note", "arguments": {}},
+            }
+        )
+        business_error = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "read_note",
+                    "arguments": {
+                        "path": "Fundus/demo/missing.md",
+                        "project_root": str(self.project_root),
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(missing_required["result"]["isError"])
+        self.assertIn("Missing required argument", missing_required["result"]["content"][0]["text"])
+        self.assertTrue(business_error["result"]["isError"])
+        self.assertIn("does not exist", business_error["result"]["content"][0]["text"])
+
+    def test_stdio_messages_are_newline_delimited_utf8(self) -> None:
+        message = {"jsonrpc": "2.0", "id": 4, "method": "ping", "params": {"text": "Grüße"}}
         stream = io.BytesIO()
 
         fundus_mcp.write_stdio_message(stream, message)
+        raw = stream.getvalue()
         stream.seek(0)
 
+        self.assertEqual(raw, json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n")
+        self.assertNotIn(b"Content-Length", raw)
         self.assertEqual(fundus_mcp.read_stdio_message(stream), message)
+
+    def test_stdio_reader_skips_blank_lines_and_preserves_escaped_newlines(self) -> None:
+        message = {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "ping",
+            "params": {"text": "first\nsecond"},
+        }
+        payload = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        stream = io.BytesIO(b"\n\r\n" + payload + b"\n")
+
+        self.assertEqual(fundus_mcp.read_stdio_message(stream), message)
+        self.assertIsNone(fundus_mcp.read_stdio_message(stream))
+
+    def test_stdio_reader_rejects_content_length_framing_and_malformed_json(self) -> None:
+        with self.assertRaises(json.JSONDecodeError):
+            fundus_mcp.read_stdio_message(io.BytesIO(b"Content-Length: 2\r\n\r\n{}"))
+        with self.assertRaises(json.JSONDecodeError):
+            fundus_mcp.read_stdio_message(io.BytesIO(b"{not-json}\n"))
 
 
 if __name__ == "__main__":
